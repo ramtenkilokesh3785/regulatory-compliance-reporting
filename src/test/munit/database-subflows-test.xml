@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+	<munit:config name="database-subflows-test.xml" />
+
+	<!-- Test 1: Dedicated Database Connection Ping - Success -->
+	<munit:test name="test-database-connection-ping-success" doc:id="test-db-001" description="Verify successful database connection ping">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Ping Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Ping Database Connection" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{ ping_status: 1 }]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="test-database-connection-subflow" doc:name="Call test-database-connection-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:select" times="1" doc:name="Verify Ping Query Executed">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Ping Database Connection" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: Dedicated Database Connection Ping - Failure -->
+	<munit:test name="test-database-connection-ping-failure" doc:id="test-db-002" description="Verify database connectivity failure propagation" expectedErrorType="DB:CONNECTIVITY">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Ping Select Failure">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Ping Database Connection" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:error typeId="DB:CONNECTIVITY" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="test-database-connection-subflow" doc:name="Call test-database-connection-subflow" />
+		</munit:execution>
+	</munit:test>
+
+	<!-- Test 3: Reporting Period Control Calculation -->
+	<munit:test name="test-get-reporting-period-control-subflow" doc:id="test-db-003" description="Verify control period calculation and sequence increment">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 5 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="get-reporting-period-control-subflow" doc:name="Call get-reporting-period-control-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Entity Code" actual="#[vars.runContext.entityCode]" expected="#['ENT0091']" />
+			<munit-tools:assert-equals doc:name="Assert Sequence Increment" actual="#[vars.runContext.sequenceNumber]" expected="#[6]" />
+			<munit-tools:assert-that doc:name="Assert Run ID Not Null" expression="#[vars.runContext.runId]" is="#[MunitTools::notNullValue()]" />
+			<munit-tools:assert-equals doc:name="Assert Is Revision False" actual="#[vars.runContext.isRevision]" expected="#[false]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 4: Extraction Subflow with Database Results -->
+	<munit:test name="test-extract-flagged-transactions-subflow" doc:id="test-db-004" description="Verify extracted records captured into variables">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Extraction Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="extractedRecords" value="#[[
+							{ transaction_id: 'TXN10001', transaction_timestamp: '2026-09-11 08:15:30', account_number: 'ACC987654321', customer_id: 'CUST001', customer_name: 'lokesh', customer_type: 'INDIVIDUAL', transaction_type: 'WIRE_TRANSFER', channel: 'ONLINE', currency: 'USD', amount: 250000.00, counterparty_name: 'Alpine', counterparty_country: 'CHE', flag_code: 'AML_HIGH_VALUE', flag_reason: 'High value', flagged_at: '2026-09-11 08:30:00', reviewer: 'lokesh', review_status: 'PENDING_REPORT' }
+						]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{ periodStart: '2026-09-11 00:00:00', periodEnd: '2026-09-11 23:59:59' }]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="extract-flagged-transactions-subflow" doc:name="Call extract-flagged-transactions-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Extracted Size" actual="#[sizeOf(vars.extractedRecords)]" expected="#[1]" />
+			<munit-tools:assert-equals doc:name="Assert Customer Name" actual="#[vars.extractedRecords[0].customer_name]" expected="#['lokesh']" />
+			<munit-tools:assert-equals doc:name="Assert Reviewer" actual="#[vars.extractedRecords[0].reviewer]" expected="#['lokesh']" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 5: Extraction Subflow Database Query Failure -->
+	<munit:test name="test-extract-flagged-transactions-query-failure" doc:id="test-db-005" description="Verify database extraction query error propagation" expectedErrorType="DB:QUERY_EXECUTION">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Extraction Query Failure">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:error typeId="DB:QUERY_EXECUTION" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{ periodStart: '2026-09-11 00:00:00', periodEnd: '2026-09-11 23:59:59' }]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="extract-flagged-transactions-subflow" doc:name="Call extract-flagged-transactions-subflow" />
+		</munit:execution>
+	</munit:test>
+
+	<!-- Test 6: Create Initial Audit Record Subflow -->
+	<munit:test name="test-create-initial-audit-run-subflow" doc:id="test-db-006" description="Verify initial audit record insertion">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Insert RUNNING Audit Record" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[1]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						runId: 'RUN-TEST-001',
+						entityCode: 'ENT0091',
+						entityName: 'Apex Global Banking',
+						reportType: 'STR',
+						periodStart: '2026-09-11 00:00:00',
+						periodEnd: '2026-09-11 23:59:59',
+						sequenceNumber: 1,
+						isRevision: false,
+						triggerSource: 'SCHEDULED',
+						correlationId: 'CORR-001'
+					}]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="create-initial-audit-run-subflow" doc:name="Call create-initial-audit-run-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:insert" times="1" doc:name="Verify Audit Insert Executed">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Insert RUNNING Audit Record" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 7: Completeness Aggregate Subflow -->
+	<munit:test name="test-execute-completeness-aggregate-subflow" doc:id="test-db-007" description="Verify completeness aggregation query">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Aggregate Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 2, total_amount: 259900.00, total_customers: 2 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{ periodStart: '2026-09-11 00:00:00', periodEnd: '2026-09-11 23:59:59' }]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="execute-completeness-aggregate-subflow" doc:name="Call execute-completeness-aggregate-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Total Records" actual="#[vars.aggregateTotals[0].total_records]" expected="#[2]" />
+			<munit-tools:assert-equals doc:name="Assert Total Amount" actual="#[vars.aggregateTotals[0].total_amount]" expected="#[259900.00]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 8: Historical Runs Retrieval Subflow -->
+	<munit:test name="test-get-historical-runs-subflow" doc:id="test-db-008" description="Verify retrieval of historical baseline runs">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Runs Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Select Last 5 Successful Runs" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="historicalRuns" value="#[[
+							{ run_id: 'RUN-HIST-01', record_count: 5, total_amount: 1200000.00, customer_count: 4, run_status: 'SUCCESS' },
+							{ run_id: 'RUN-HIST-02', record_count: 6, total_amount: 1400000.00, customer_count: 5, run_status: 'SUCCESS' }
+						]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{ entityCode: 'ENT0091', reportType: 'STR' }]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="get-historical-runs-subflow" doc:name="Call get-historical-runs-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Historical Runs Count" actual="#[sizeOf(vars.historicalRuns)]" expected="#[2]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 9: Update Audit Run Status Subflow -->
+	<munit:test name="test-update-audit-run-status-subflow" doc:id="test-db-009" description="Verify update of audit run status">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Audit Update">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Run Audit Status" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[1]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{ runId: 'RUN-TEST-001' }]" mediaType="application/java" />
+					<munit:variable key="runMetrics" value="#[{ recordCount: 2, totalAmount: 250000.00, customerCount: 2, completenessResult: 'PASS', checksum: 'abc123' }]" mediaType="application/java" />
+					<munit:variable key="currentRunStatus" value="#['SUCCESS']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="update-audit-run-status-subflow" doc:name="Call update-audit-run-status-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:update" times="1" doc:name="Verify Audit Update Executed">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Run Audit Status" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 10: Advance Reporting Control - Live Standard Run -->
+	<munit:test name="test-advance-reporting-control-live-run" doc:id="test-db-010" description="Verify control pointer advances on live non-revision run">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Control Table Update">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[1]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						isRevision: false,
+						entityCode: 'ENT0091',
+						reportType: 'STR',
+						periodEnd: '2026-09-11 23:59:59',
+						sequenceNumber: 1
+					}]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="advance-reporting-control-subflow" doc:name="Call advance-reporting-control-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:update" times="1" doc:name="Verify Control Pointer Advanced">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 11: Advance Reporting Control - Historical Reprocess Does NOT Advance Control (Duplicate Prevention) -->
+	<munit:test name="test-advance-reporting-control-historical-reprocess-no-advance" doc:id="test-db-011" description="Verify control pointer is NOT advanced during historical reprocess">
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context for Revision">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						isRevision: true,
+						entityCode: 'ENT0091',
+						reportType: 'STR',
+						periodEnd: '2026-09-10 23:59:59',
+						sequenceNumber: 2
+					}]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="advance-reporting-control-subflow" doc:name="Call advance-reporting-control-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:update" times="0" doc:name="Verify Control Pointer NOT Advanced">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 12: Mark Flags REPORTED When Records Exist -->
+	<munit:test name="test-mark-flags-reported-when-records-exist" doc:id="test-db-012" description="Verify flagged transactions updated to REPORTED status">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Flags Update">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Flags to REPORTED" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[1]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context">
+				<munit:variables>
+					<munit:variable key="extractedRecords" value="#[[{ transaction_id: 'TXN10001' }]]" mediaType="application/java" />
+					<munit:variable key="runContext" value="#[{ runId: 'RUN-TEST-001', periodStart: '2026-09-11 00:00:00', periodEnd: '2026-09-11 23:59:59' }]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="mark-flags-reported-subflow" doc:name="Call mark-flags-reported-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:update" times="1" doc:name="Verify Flags Updated">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Flags to REPORTED" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 13: Mark Flags REPORTED Skips When No Records -->
+	<munit:test name="test-mark-flags-reported-skips-when-empty" doc:id="test-db-013" description="Verify flag update skipped when extracted records list is empty">
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Context Empty Records">
+				<munit:variables>
+					<munit:variable key="extractedRecords" value="#[[]]" mediaType="application/java" />
+					<munit:variable key="runContext" value="#[{ runId: 'RUN-TEST-001', periodStart: '2026-09-11 00:00:00', periodEnd: '2026-09-11 23:59:59' }]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="mark-flags-reported-subflow" doc:name="Call mark-flags-reported-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:verify-call processor="db:update" times="0" doc:name="Verify Flags Update Skipped">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Flags to REPORTED" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 14: Reporting Period Control Calculation Advances Sequence for Prior Period Runs -->
+	<munit:test name="test-get-reporting-period-control-subflow-advances-past-existing-period-runs" doc:id="test-db-014" description="Verify control period calculation increments sequence past existing period sequence when prior runs exist in compliance_report_runs">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select With Existing Period Run">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0, max_period_sequence: 1 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Manual Period">
+				<munit:variables>
+					<munit:variable key="manualPeriodStart" value="#['2026-09-15 00:00:00']" mediaType="application/java" />
+					<munit:variable key="manualPeriodEnd" value="#['2026-09-15 23:59:59']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="get-reporting-period-control-subflow" doc:name="Call get-reporting-period-control-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Entity Code" actual="#[vars.runContext.entityCode]" expected="#['ENT0091']" />
+			<!-- Since max_period_sequence is 1, next sequence must advance to 2 (_002) -->
+			<munit-tools:assert-equals doc:name="Assert Sequence Advanced to 2" actual="#[vars.runContext.sequenceNumber]" expected="#[2]" />
+			<munit-tools:assert-equals doc:name="Assert Is Revision True" actual="#[vars.runContext.isRevision]" expected="#[true]" />
+		</munit:validation>
+	</munit:test>
+
+</mule>

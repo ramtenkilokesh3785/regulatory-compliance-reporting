@@ -1,0 +1,53 @@
+# ==============================================================================
+# Base Configuration for Regulatory Compliance Reporting
+# MuleSoft Runtime 4.12.2 / Java 17 / MySQL 8.0.46
+# ==============================================================================
+
+http:
+  host: "0.0.0.0"
+  port: "8081"
+  basePath: "/api/v1"
+
+compliance:
+  entityCode: "ENT0091"
+  entityName: "Apex Global Banking"
+  reportType: "STR"
+  currency: "USD"
+  timezone: "UTC"
+  fetchSize: "500"
+  cronExpression: "0 0 1 * * ?" # 01:00 AM UTC Daily
+  deviationThresholdPct: "50.0"
+  maxAttachmentSizeBytes: "10485760" # 10 MB
+
+directories:
+  output: "C:/compliance-reporting/output"
+  archive: "C:/compliance-reporting/archive"
+
+database:
+  host: "localhost"
+  port: "3306"
+  name: "compliance_db"
+  user: "root"
+  password: "root"
+  maxPoolSize: "10"
+  minPoolSize: "2"
+  connectionTimeoutSeconds: "30"
+
+email:
+  host: "smtp.gmail.com"
+  port: "587"
+  user: "ramtenkilokesh@gmail.com"
+  password: "YOUR_EMAIL_APP_PASSWORD"
+  from: "ramtenkilokesh@gmail.com"
+  to: "lokeshramtenki88@gmail.com"
+  subjectPrefix: "[REGULATORY COMPLIANCE]"
+  starttls: "true"
+  connectionTimeoutSeconds: "15"
+
+secureLink:
+  baseUrl: "https://compliance.internal.bank/portal/reports/download"
+  secretKey: "SecretKey_Placeholder_For_Secure_Tokens"
+
+resilience:
+  maxRetries: "3"
+  retryIntervalMs: "2000"

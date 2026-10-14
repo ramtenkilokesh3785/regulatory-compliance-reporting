@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+	<munit:config name="file-subflows-test.xml" />
+
+	<!-- Test 1: Unique Archive Filename Generation & Variable Computation -->
+	<munit:test name="test-write-and-archive-unique-filenames" doc:id="test-file-001" description="Verify unique archive filename generation with entity, type, period, sequence, and clean run ID">
+		<munit:behavior>
+			<!-- Mock Output File Write -->
+			<munit-tools:mock-when processor="file:write" doc:name="Mock Output Write">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Submission File (Output)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Archive File Writes -->
+			<munit-tools:mock-when processor="file:write" doc:name="Mock Archive Submission Write">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Submission File (Archive)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="file:write" doc:name="Mock Archive Summary Write">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Summary File (Archive)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Run Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						runId: 'RUN-20260915-103000-A1B2C3',
+						entityCode: 'ENT0091',
+						entityName: 'Apex Global Banking',
+						reportType: 'STR',
+						periodStart: '2026-09-15 00:00:00',
+						periodEnd: '2026-09-15 23:59:59',
+						sequenceNumber: 1,
+						isRevision: false
+					}]" mediaType="application/java" />
+					<munit:variable key="submissionFileContent" value="#['H|ENT0091|...']" mediaType="application/java" />
+					<munit:variable key="summaryFileContent" value="#['EXECUTIVE SUMMARY...']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="write-and-archive-reports-subflow" doc:name="Call write-and-archive-reports-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify Output Submission Filename is standard for regulator pickup -->
+			<munit-tools:assert-equals doc:name="Assert Output Filename" 
+				actual="#[vars.submissionFilename]" expected="#['ENT0091_STR_20260915_001.csv']" />
+			<munit-tools:assert-equals doc:name="Assert Output Path" 
+				actual="#[vars.outputSubmissionFilePath]" expected="#['C:/compliance-reporting/output/ENT0091_STR_20260915_001.csv']" />
+
+			<!-- Verify Archive Filename is Unique and incorporates entity, type, period, sequence, and run identifier -->
+			<munit-tools:assert-equals doc:name="Assert Archive Submission Filename" 
+				actual="#[vars.archiveSubmissionFilename]" expected="#['ENT0091_STR_20260915_001_20260915-103000-A1B2C3.csv']" />
+			<munit-tools:assert-equals doc:name="Assert Archive Submission Path" 
+				actual="#[vars.archiveSubmissionFilePath]" expected="#['C:/compliance-reporting/archive/ENT0091_STR_20260915_001_20260915-103000-A1B2C3.csv']" />
+
+			<!-- Verify Archive Summary Filename is also Unique -->
+			<munit-tools:assert-equals doc:name="Assert Archive Summary Filename" 
+				actual="#[vars.archiveSummaryFilename]" expected="#['ENT0091_STR_20260915_001_20260915-103000-A1B2C3_SUMMARY.txt']" />
+			<munit-tools:assert-equals doc:name="Assert Archive Summary Path" 
+				actual="#[vars.archiveSummaryFilePath]" expected="#['C:/compliance-reporting/archive/ENT0091_STR_20260915_001_20260915-103000-A1B2C3_SUMMARY.txt']" />
+
+			<!-- Verify writes were performed -->
+			<munit-tools:verify-call processor="file:write" times="1" doc:name="Verify Output Write Called">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Submission File (Output)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call processor="file:write" times="1" doc:name="Verify Archive Submission Write Called">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Submission File (Archive)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call processor="file:write" times="1" doc:name="Verify Archive Summary Write Called">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Summary File (Archive)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: Successive Reprocess Runs for Same Reporting Period Produce Unique Archive Names -->
+	<munit:test name="test-write-and-archive-repeated-runs-distinct-filenames" doc:id="test-file-002" description="Verify repeated runs for identical period produce non-colliding archive paths">
+		<munit:behavior>
+			<munit-tools:mock-when processor="file:write" doc:name="Mock All File Writes">
+				<munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<!-- Request 1 -->
+			<munit:set-event doc:name="Set Event Run 1">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						runId: 'RUN-20260915-140000-RUN001',
+						entityCode: 'ENT0091',
+						reportType: 'STR',
+						periodEnd: '2026-09-15 23:59:59',
+						sequenceNumber: 1,
+						isRevision: true
+					}]" mediaType="application/java" />
+					<munit:variable key="submissionFileContent" value="#['H|...']" mediaType="application/java" />
+					<munit:variable key="summaryFileContent" value="#['Summary...']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="write-and-archive-reports-subflow" doc:name="Call Subflow Run 1" />
+			<set-variable value="#[vars.archiveSubmissionFilePath]" doc:name="Save Run 1 Archive Path" variableName="run1ArchivePath" />
+			<set-variable value="#[vars.archiveSummaryFilePath]" doc:name="Save Run 1 Summary Path" variableName="run1SummaryPath" />
+
+			<!-- Request 2 (Reprocess of the exact same period and sequence with distinct runId) -->
+			<set-variable value="#[{
+				runId: 'RUN-20260915-140500-RUN002',
+				entityCode: 'ENT0091',
+				reportType: 'STR',
+				periodEnd: '2026-09-15 23:59:59',
+				sequenceNumber: 1,
+				isRevision: true
+			}]" doc:name="Set RunContext Run 2" variableName="runContext" />
+			<flow-ref name="write-and-archive-reports-subflow" doc:name="Call Subflow Run 2" />
+			<set-variable value="#[vars.archiveSubmissionFilePath]" doc:name="Save Run 2 Archive Path" variableName="run2ArchivePath" />
+			<set-variable value="#[vars.archiveSummaryFilePath]" doc:name="Save Run 2 Summary Path" variableName="run2SummaryPath" />
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify both paths share same period prefix -->
+			<munit-tools:assert-that doc:name="Assert Run 1 Has Prefix" 
+				expression="#[vars.run1ArchivePath contains 'ENT0091_STR_20260915_001_']" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert Run 2 Has Prefix" 
+				expression="#[vars.run2ArchivePath contains 'ENT0091_STR_20260915_001_']" is="#[MunitTools::equalTo(true)]" />
+
+			<!-- CRITICAL: Ensure archive paths are distinct and therefore will not collide under CREATE_NEW -->
+			<munit-tools:assert-that doc:name="Assert Run 1 != Run 2 Archive Path" 
+				expression="#[vars.run1ArchivePath != vars.run2ArchivePath]" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert Run 1 != Run 2 Summary Path" 
+				expression="#[vars.run1SummaryPath != vars.run2SummaryPath]" is="#[MunitTools::equalTo(true)]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 3: Fallback Run Identifier Generation when runId is omitted -->
+	<munit:test name="test-write-and-archive-fallback-run-identifier" doc:id="test-file-003" description="Verify fallback unique run identifier generation if runId is omitted">
+		<munit:behavior>
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Writes">
+				<munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Without runId">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						entityCode: 'ENT0091',
+						reportType: 'STR',
+						periodEnd: '2026-09-15 23:59:59',
+						sequenceNumber: 1
+					}]" mediaType="application/java" />
+					<munit:variable key="submissionFileContent" value="#['H|...']" mediaType="application/java" />
+					<munit:variable key="summaryFileContent" value="#['Summary...']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="write-and-archive-reports-subflow" doc:name="Call Subflow Without runId" />
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify that archive filename was generated with a fallback unique suffix and ends with .csv -->
+			<munit-tools:assert-that doc:name="Assert Fallback Filename Prefix" 
+				expression="#[vars.archiveSubmissionFilename startsWith 'ENT0091_STR_20260915_001_']" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert Fallback Filename Suffix" 
+				expression="#[vars.archiveSubmissionFilename endsWith '.csv']" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert Fallback File Path Not Null" 
+				expression="#[vars.archiveSubmissionFilePath]" is="#[MunitTools::notNullValue()]" />
+		</munit:validation>
+	</munit:test>
+
+</mule>

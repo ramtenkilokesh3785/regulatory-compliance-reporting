@@ -1,0 +1,510 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!-- Main APIkit Router Flow -->
+    <flow name="compliance-api-main"
+          doc:name="Compliance API Main Flow">
+
+        <http:listener config-ref="HTTP_Listener_config"
+                       path="/api/v1/*"
+                       doc:name="Listener">
+
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+            </http:response>
+
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body>#[payload]</http:body>
+                <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+            </http:error-response>
+
+        </http:listener>
+
+        <apikit:router config-ref="compliance_api_config"
+                       doc:name="APIkit Router"/>
+
+        <error-handler>
+
+            <on-error-propagate type="APIKIT:BAD_REQUEST">
+                <ee:transform doc:name="Bad Request Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+    correlationId: correlationId,
+    errorType: "APIKIT:BAD_REQUEST",
+    message: "Bad request payload or invalid parameters",
+    details: error.description
+}
+]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus"><![CDATA[400]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+
+            <on-error-propagate type="APIKIT:NOT_FOUND">
+                <ee:transform doc:name="Not Found Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+    correlationId: correlationId,
+    errorType: "APIKIT:NOT_FOUND",
+    message: "Resource not found",
+    details: error.description
+}
+]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus"><![CDATA[404]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+
+        </error-handler>
+    </flow>
+
+    <!-- API Console Flow -->
+    <flow name="compliance-api-console"
+          doc:name="Compliance API Console Flow">
+
+        <http:listener config-ref="HTTP_Listener_config"
+                       path="/console/*"
+                       doc:name="Listener">
+
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+            </http:response>
+
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body>#[payload]</http:body>
+                <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+            </http:error-response>
+
+        </http:listener>
+
+        <apikit:console config-ref="compliance_api_config"
+                        doc:name="APIkit Console"/>
+
+    </flow>
+
+    <!-- POST /reports/run: request, date and entity validation -->
+    <flow name="post:\reports\run:application\json:compliance_api_config"
+          doc:name="POST /reports/run Flow">
+
+        <logger level="INFO"
+                doc:name="Log Manual API Trigger"
+                message="Manual report run requested via REST API."/>
+
+        <!-- Preserve the original request -->
+        <set-variable variableName="requestBody"
+                      value="#[payload]"
+                      doc:name="Preserve Request Body"/>
+
+        <!-- Validate required fields -->
+        <choice doc:name="Validate Required Fields">
+
+            <when expression="#[
+                vars.requestBody == null
+                or isEmpty(trim((vars.requestBody.entityCode default '') as String))
+                or isEmpty(trim((vars.requestBody.reportType default '') as String))
+                or isEmpty(trim((vars.requestBody.periodStart default '') as String))
+                or isEmpty(trim((vars.requestBody.periodEnd default '') as String))
+            ]">
+
+                <set-variable variableName="httpStatus"
+                              value="#[400]"
+                              doc:name="Set Missing Fields HTTP 400"/>
+
+                <ee:transform doc:name="Build Missing Fields Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    status: "ERROR",
+    errorType: "INVALID_REQUEST",
+    message: "Required fields are missing or blank.",
+    requiredFields: [
+        "entityCode",
+        "reportType",
+        "periodStart",
+        "periodEnd"
+    ]
+}
+]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+            </when>
+
+            <otherwise>
+
+                <!-- Validate date formats and reporting period -->
+                <choice doc:name="Validate Reporting Period">
+
+                    <!-- Reject malformed date/time strings -->
+                    <when expression="#[
+                        isEmpty(
+                            trim((vars.requestBody.periodStart default '') as String)
+                        )
+                        or isEmpty(
+                            trim((vars.requestBody.periodEnd default '') as String)
+                        )
+                    ]">
+
+                        <set-variable variableName="httpStatus"
+                                      value="#[400]"
+                                      doc:name="Set Invalid Date HTTP 400"/>
+
+                        <ee:transform doc:name="Build Invalid Date Response">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    status: "ERROR",
+    errorType: "INVALID_REPORTING_PERIOD",
+    message: "Both periodStart and periodEnd are required."
+}
+]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                    </when>
+
+                    <!-- Compare parsed date/time values -->
+                    <when expression="#[
+                        (vars.requestBody.periodStart as LocalDateTime)
+                        >=
+                        (vars.requestBody.periodEnd as LocalDateTime)
+                    ]">
+
+                        <set-variable variableName="httpStatus"
+                                      value="#[400]"
+                                      doc:name="Set Invalid Period HTTP 400"/>
+
+                        <ee:transform doc:name="Build Invalid Period Response">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    status: "ERROR",
+    errorType: "INVALID_REPORTING_PERIOD",
+    message: "periodStart must be earlier than periodEnd."
+}
+]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                    </when>
+
+                    <otherwise>
+
+                        <!-- Validate entity and report type against MySQL -->
+                        <db:select doc:name="Validate Entity and Report Type"
+                                   config-ref="Compliance_Database_Config">
+
+                            <db:sql><![CDATA[
+                                SELECT entity_code, report_type
+                                FROM compliance_report_control
+                                WHERE entity_code = :entityCode
+                                  AND report_type = :reportType
+                            ]]></db:sql>
+
+                            <db:input-parameters><![CDATA[#[{
+                                entityCode: vars.requestBody.entityCode,
+                                reportType: vars.requestBody.reportType
+                            }]]]></db:input-parameters>
+
+                        </db:select>
+
+                        <!-- The SELECT result replaces the payload -->
+                        <choice doc:name="Check Entity Configuration">
+
+                            <when expression="#[isEmpty(payload)]">
+
+                                <set-variable variableName="httpStatus"
+                                              value="#[400]"
+                                              doc:name="Set Invalid Entity HTTP 400"/>
+
+                                <ee:transform doc:name="Build Invalid Entity Response">
+                                    <ee:message>
+                                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    status: "ERROR",
+    errorType: "INVALID_ENTITY_OR_REPORT_TYPE",
+    message: "The entity code and report type are not configured for compliance reporting."
+}
+]]></ee:set-payload>
+                                    </ee:message>
+                                </ee:transform>
+
+                            </when>
+
+                            <otherwise>
+
+                                <!-- Restore the original request -->
+                                <set-payload value="#[vars.requestBody]"
+                                             doc:name="Restore Original Request"/>
+
+                                <set-variable value="MANUAL_API"
+                                              doc:name="Set triggerSource"
+                                              variableName="triggerSource"/>
+
+                                <set-variable value="#[payload.entityCode]"
+                                              doc:name="Set entityCode"
+                                              variableName="entityCode"/>
+
+                                <set-variable value="#[payload.reportType]"
+                                              doc:name="Set reportType"
+                                              variableName="reportType"/>
+
+                                <set-variable value="#[payload.periodStart]"
+                                              doc:name="Set manualPeriodStart"
+                                              variableName="manualPeriodStart"/>
+
+                                <set-variable value="#[payload.periodEnd]"
+                                              doc:name="Set manualPeriodEnd"
+                                              variableName="manualPeriodEnd"/>
+
+                                <set-variable value="#[payload.isHistoricalReprocess default false]"
+                                              doc:name="Set isHistoricalReprocess"
+                                              variableName="isHistoricalReprocess"/>
+
+                                <flow-ref name="compliance-orchestrator-flow"
+                                          doc:name="Invoke Compliance Orchestrator"/>
+
+                            </otherwise>
+
+                        </choice>
+
+                    </otherwise>
+
+                </choice>
+
+            </otherwise>
+
+        </choice>
+
+    </flow>
+
+    <!-- GET /reports/runs/{runId}: audit record inspection -->
+    <flow name="get:\reports\runs\(runId):compliance_api_config"
+          doc:name="GET /reports/runs/{runId} Flow">
+
+        <set-variable value="#[attributes.uriParams.runId]"
+                      doc:name="Set runId"
+                      variableName="targetRunId"/>
+
+        <logger level="INFO"
+                doc:name="Log Fetch Run"
+                message="Fetching audit details for Run ID: #[vars.targetRunId]"/>
+
+        <db:select doc:name="Query Run Audit Record"
+                   config-ref="Compliance_Database_Config">
+
+            <db:sql><![CDATA[
+                SELECT
+                    run_id, entity_code, entity_name, report_type,
+                    period_start, period_end, sequence_number, is_revision,
+                    record_count, total_amount, customer_count, completeness_result,
+                    is_nil_report, output_file_path, archive_file_path, summary_file_path,
+                    checksum, notification_status, trigger_source, run_status,
+                    error_message, correlation_id, started_at, completed_at
+                FROM compliance_report_runs
+                WHERE run_id = :runId
+                LIMIT 1
+            ]]></db:sql>
+
+            <db:input-parameters><![CDATA[#[{
+                runId: vars.targetRunId
+            }]]]></db:input-parameters>
+
+        </db:select>
+
+        <choice doc:name="Check If Record Exists">
+
+            <when expression="#[!isEmpty(payload)]">
+
+                <ee:transform doc:name="Format Audit Record Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var r = payload[0]
+---
+{
+    runId: r.run_id,
+    entityCode: r.entity_code,
+    entityName: r.entity_name,
+    reportType: r.report_type,
+    periodStart: r.period_start as String,
+    periodEnd: r.period_end as String,
+    sequenceNumber: r.sequence_number,
+    isRevision: r.is_revision == 1 or r.is_revision == true,
+    recordCount: r.record_count,
+    totalAmount: r.total_amount as Number,
+    customerCount: r.customer_count,
+    completenessResult: r.completeness_result,
+    isNilReport: r.is_nil_report == 1 or r.is_nil_report == true,
+    outputFilePath: r.output_file_path,
+    archiveFilePath: r.archive_file_path,
+    summaryFilePath: r.summary_file_path,
+    checksum: r.checksum,
+    notificationStatus: r.notification_status,
+    triggerSource: r.trigger_source,
+    runStatus: r.run_status,
+    errorMessage: r.error_message,
+    correlationId: r.correlation_id,
+    startedAt: r.started_at as String,
+    completedAt: if (r.completed_at != null)
+        (r.completed_at as String)
+    else null
+}
+]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+            </when>
+
+            <otherwise>
+
+                <set-variable value="404"
+                              doc:name="Set HTTP 404"
+                              variableName="httpStatus"/>
+
+                <ee:transform doc:name="Format 404 Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+    correlationId: correlationId,
+    errorType: "COMPLIANCE:RUN_NOT_FOUND",
+    message: "Compliance report run not found for ID: "
+        ++ (vars.targetRunId default "")
+}
+]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+            </otherwise>
+
+        </choice>
+
+    </flow>
+
+    <!-- GET /reports/runs: paginated run history -->
+    <flow name="get:\reports\runs:compliance_api_config"
+          doc:name="GET /reports/runs Flow">
+
+        <ee:transform doc:name="Extract Query Parameters">
+            <ee:variables>
+                <ee:set-variable variableName="queryParams"><![CDATA[%dw 2.0
+output application/json
+var lim = (attributes.queryParams.limit default 20) as Number
+var off = (attributes.queryParams.offset default 0) as Number
+var status = attributes.queryParams.status
+---
+{
+    limit: if (lim > 100) 100 else if (lim < 1) 20 else lim,
+    offset: if (off < 0) 0 else off,
+    status: status
+}
+]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <db:select doc:name="Query Run History List"
+                   config-ref="Compliance_Database_Config">
+
+            <db:sql><![CDATA[
+                SELECT
+                    run_id, entity_code, entity_name, report_type,
+                    period_start, period_end, sequence_number, is_revision,
+                    record_count, total_amount, customer_count, completeness_result,
+                    is_nil_report, output_file_path, archive_file_path, summary_file_path,
+                    checksum, notification_status, trigger_source, run_status,
+                    error_message, correlation_id, started_at, completed_at
+                FROM compliance_report_runs
+                WHERE (:status IS NULL OR run_status = :status)
+                ORDER BY started_at DESC
+                LIMIT :limit OFFSET :offset
+            ]]></db:sql>
+
+            <db:input-parameters><![CDATA[#[{
+                status: vars.queryParams.status,
+                limit: vars.queryParams.limit,
+                offset: vars.queryParams.offset
+            }]]]></db:input-parameters>
+
+        </db:select>
+
+        <ee:transform doc:name="Format Run List Response">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var runs = payload default []
+---
+{
+    total: sizeOf(runs),
+    limit: vars.queryParams.limit,
+    offset: vars.queryParams.offset,
+    runs: runs map ((r) -> {
+        runId: r.run_id,
+        entityCode: r.entity_code,
+        entityName: r.entity_name,
+        reportType: r.report_type,
+        periodStart: r.period_start as String,
+        periodEnd: r.period_end as String,
+        sequenceNumber: r.sequence_number,
+        isRevision: r.is_revision == 1 or r.is_revision == true,
+        recordCount: r.record_count,
+        totalAmount: r.total_amount as Number,
+        customerCount: r.customer_count,
+        completenessResult: r.completeness_result,
+        isNilReport: r.is_nil_report == 1 or r.is_nil_report == true,
+        outputFilePath: r.output_file_path,
+        archiveFilePath: r.archive_file_path,
+        summaryFilePath: r.summary_file_path,
+        checksum: r.checksum,
+        notificationStatus: r.notification_status,
+        triggerSource: r.trigger_source,
+        runStatus: r.run_status,
+        errorMessage: r.error_message,
+        correlationId: r.correlation_id,
+        startedAt: r.started_at as String,
+        completedAt: if (r.completed_at != null)
+            (r.completed_at as String)
+        else null
+    })
+}
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+
+    </flow>
+
+</mule>

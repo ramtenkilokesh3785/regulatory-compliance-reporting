@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+	<munit:config name="notification-subflows-test.xml" />
+
+	<!-- Test 1: Send Notification with Attachments -->
+	<munit:test name="test-send-compliance-notification-attachment" doc:id="test-notif-001" description="Verify standard email dispatch with attached report files">
+		<munit:behavior>
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Email Send">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['SENT']" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Notification Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						runId: 'RUN-TEST-001',
+						entityCode: 'ENT0091',
+						entityName: 'Apex Global Banking',
+						reportType: 'STR',
+						currency: 'USD',
+						periodStart: '2026-09-11 00:00:00',
+						periodEnd: '2026-09-11 23:59:59',
+						sequenceNumber: 1,
+						isRevision: false
+					}]" mediaType="application/java" />
+					<munit:variable key="runMetrics" value="#[{
+						recordCount: 1,
+						totalAmount: 250000.00,
+						customerCount: 1,
+						completenessResult: 'PASS',
+						checksum: 'abc123sha256'
+					}]" mediaType="application/java" />
+					<munit:variable key="volumeAnalysis" value="#[{ hasDeviationAlert: false }]" mediaType="application/java" />
+					<munit:variable key="notificationMode" value="#['ATTACHMENT']" mediaType="application/java" />
+					<munit:variable key="submissionFilename" value="#['ENT0091_STR_20260911_001.csv']" mediaType="application/java" />
+					<munit:variable key="summaryFilename" value="#['ENT0091_STR_20260911_001_SUMMARY.txt']" mediaType="application/java" />
+					<munit:variable key="submissionFileContent" value="#['H|...']" mediaType="application/java" />
+					<munit:variable key="summaryFileContent" value="#['Summary...']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="send-compliance-notification-subflow" doc:name="Call send-compliance-notification-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Notification Status" 
+				actual="#[vars.notificationStatus]" expected="#['SENT_ATTACHMENT']" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: Send Notification with Secure Link (Oversized Attachment Fallback) -->
+	<munit:test name="test-send-compliance-notification-secure-link" doc:id="test-notif-002" description="Verify secure link email dispatch when files exceed threshold">
+		<munit:behavior>
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Email Send">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['SENT']" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Secure Link Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						runId: 'RUN-TEST-002',
+						entityCode: 'ENT0091',
+						entityName: 'Apex Global Banking',
+						reportType: 'STR',
+						currency: 'USD',
+						periodStart: '2026-09-11 00:00:00',
+						periodEnd: '2026-09-11 23:59:59',
+						sequenceNumber: 2,
+						isRevision: false
+					}]" mediaType="application/java" />
+					<munit:variable key="runMetrics" value="#[{
+						recordCount: 5000,
+						totalAmount: 50000000.00,
+						customerCount: 1200,
+						completenessResult: 'PASS',
+						checksum: 'largehash123'
+					}]" mediaType="application/java" />
+					<munit:variable key="volumeAnalysis" value="#[{ hasDeviationAlert: true, recordDeviationPct: '+150%' }]" mediaType="application/java" />
+					<munit:variable key="notificationMode" value="#['SECURE_LINK']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="send-compliance-notification-subflow" doc:name="Call send-compliance-notification-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Notification Status" 
+				actual="#[vars.notificationStatus]" expected="#['SENT_SECURE_LINK']" />
+		</munit:validation>
+	</munit:test>
+
+</mule>

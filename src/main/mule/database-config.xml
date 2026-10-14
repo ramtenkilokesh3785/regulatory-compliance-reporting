@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:email="http://www.mulesoft.org/schema/mule/email"
+	xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+		http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+		http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+		http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd
+		http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd">
+
+	<!-- Global Application Properties -->
+	<configuration-properties doc:name="Configuration properties" file="config.yaml" />
+
+	<!-- HTTP Listener Configuration -->
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config">
+		<http:listener-connection host="${http.host}" port="${http.port}" />
+	</http:listener-config>
+
+	<!-- RAML APIkit Router Configuration (Connected to Anypoint Platform Exchange) -->
+	<apikit:config name="compliance_api_config" api="resource::a8e5bf67-2fe9-4c18-b4ef-9f390002b29e:regulatory-compliance-reporting-api:1.0.1:raml:zip:compliance-api.raml" 
+		outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" doc:name="Router" />
+
+	<!-- MySQL Database Connector Configuration with Reconnection Strategy and Connection Pool -->
+	<db:config name="Compliance_Database_Config" doc:name="Database Config">
+		<db:my-sql-connection host="${database.host}" port="${database.port}" 
+			user="${database.user}" password="${database.password}" database="${database.name}">
+			<reconnection>
+				<reconnect count="${resilience.maxRetries}" frequency="${resilience.retryIntervalMs}" />
+			</reconnection>
+			<db:pooling-profile maxPoolSize="${database.maxPoolSize}" minPoolSize="${database.minPoolSize}" />
+			<db:connection-properties>
+				<db:connection-property key="serverTimezone" value="${compliance.timezone}" />
+				<db:connection-property key="useSSL" value="false" />
+				<db:connection-property key="allowPublicKeyRetrieval" value="true" />
+			</db:connection-properties>
+		</db:my-sql-connection>
+	</db:config>
+	
+	<!-- Dedicated Database Connectivity Test Subflow (Provides Studio Canvas Visibility & Runtime Verification) -->
+	<sub-flow name="test-database-connection-subflow" doc:name="Test Database Connection Subflow">
+		<logger level="INFO" doc:name="Log DB Connectivity Check" 
+			message="Validating MySQL database connection for database: ${database.name} at ${database.host}:${database.port}" />
+		<db:select doc:name="Ping Database Connection" config-ref="Compliance_Database_Config">
+			<db:sql><![CDATA[SELECT 1 AS ping_status]]></db:sql>
+		</db:select>
+		<logger level="INFO" doc:name="Log DB Connectivity Success" 
+			message="MySQL Database connectivity successfully verified for database: ${database.name}" />
+	</sub-flow>
+
+	<!-- File Connector Configurations -->
+	<file:config name="Compliance_Output_File_Config" doc:name="File Config - Output Directory">
+		<file:connection workingDir="${directories.output}" />
+	</file:config>
+
+	<file:config name="Compliance_Archive_File_Config" doc:name="File Config - Archive Directory">
+		<file:connection workingDir="${directories.archive}" />
+	</file:config>
+
+	<!-- Email SMTP Connector Configuration with Bounded Reconnection Strategy and STARTTLS -->
+	<email:smtp-config name="Compliance_Email_SMTP_Config" doc:name="Email SMTP Config">
+		<email:smtp-connection host="${email.host}" port="${email.port}" 
+			user="${email.user}" password="${email.password}" connectionTimeout="${email.connectionTimeoutSeconds}">
+			<reconnection>
+				<reconnect count="${resilience.maxRetries}" frequency="${resilience.retryIntervalMs}" />
+			</reconnection>
+			<email:properties>
+				<email:property key="mail.smtp.starttls.enable" value="true" />
+				<email:property key="mail.smtp.auth" value="true" />
+			</email:properties>
+		</email:smtp-connection>
+	</email:smtp-config>
+
+</mule>

@@ -1,0 +1,548 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+	<munit:config name="compliance-main-test.xml" />
+
+	<!-- Test 1: Successful End-to-End Compliance Report Orchestration -->
+	<munit:test name="test-compliance-orchestrator-success" doc:id="test-001" description="Verify complete successful report run with 6 flagged records">
+		<munit:behavior>
+			<!-- Mock Database Control Record -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Audit Insert -->
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Insert RUNNING Audit Record" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[1]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Streamed Extraction Query with 6 records -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Extraction Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="extractedRecords" value="#[[
+							{ transaction_id: 'TXN10001', transaction_timestamp: '2026-09-11 08:15:30', account_number: 'ACC987654321', customer_id: 'CUST001', customer_name: 'lokesh', customer_type: 'INDIVIDUAL', transaction_type: 'WIRE_TRANSFER', channel: 'ONLINE', currency: 'USD', amount: 250000.00, counterparty_name: 'Alpine Holdings AG', counterparty_country: 'CHE', flag_code: 'AML_HIGH_VALUE', flag_reason: 'High value wire', flagged_at: '2026-09-11 08:30:00', reviewer: 'lokesh', review_status: 'PENDING_REPORT' },
+							{ transaction_id: 'TXN10002', transaction_timestamp: '2026-09-11 09:30:15', account_number: 'ACC123456789', customer_id: 'CUST002', customer_name: 'sai', customer_type: 'INDIVIDUAL', transaction_type: 'CASH_DEPOSIT', channel: 'BRANCH', currency: 'USD', amount: 9900.00, counterparty_name: 'Self Deposit', counterparty_country: 'GBR', flag_code: 'STRUCTURING', flag_reason: 'Structuring pattern', flagged_at: '2026-09-11 09:45:00', reviewer: 'sai', review_status: 'PENDING_REPORT' }
+						]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Aggregate Completeness Query -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Aggregate Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 2, total_amount: 259900.00, total_customers: 2 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Historical Runs Select -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Runs Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Select Last 5 Successful Runs" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="historicalRuns" value="#[[{ run_id: 'RUN-HIST-01', record_count: 2, total_amount: 250000.00, customer_count: 2, run_status: 'SUCCESS' }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock File Writes and Archive -->
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Writes">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['OK']" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Email Send -->
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Email Send">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#['SENT']" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Mock Database Updates -->
+			<munit-tools:mock-when processor="db:update" doc:name="Mock Database Updates">
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[1]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Call compliance-orchestrator-flow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Run Status SUCCESS" 
+				actual="#[payload.status]" expected="#['SUCCESS']" />
+			<munit-tools:assert-equals doc:name="Assert Record Count" 
+				actual="#[payload.recordCount]" expected="#[2]" />
+			<munit-tools:assert-equals doc:name="Assert Total Amount" 
+				actual="#[payload.totalAmount]" expected="#[259900.00]" />
+			<munit-tools:assert-equals doc:name="Assert Sequence Number" 
+				actual="#[payload.sequenceNumber]" expected="#[1]" />
+			<munit-tools:assert-that doc:name="Assert Checksum Present" 
+				expression="#[payload.checksum]" is="#[MunitTools::notNullValue()]" />
+			<munit-tools:assert-equals doc:name="Assert Notification Status" 
+				actual="#[payload.notificationStatus]" expected="#['SENT_ATTACHMENT']" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: Nil-Report Handling (0 qualifying records in period) -->
+	<munit:test name="test-compliance-orchestrator-nil-report" doc:id="test-002" description="Verify valid nil report generated and archived when 0 records exist">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-12 23:59:59', current_sequence_number: 1 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert">
+				<munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- 0 extracted records -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Empty Extraction Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="extractedRecords" value="#[[]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- 0 aggregate totals -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Zero Aggregate Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 0, total_amount: 0.00, total_customers: 0 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Select">
+				<munit-tools:then-return>
+					<munit-tools:variables><munit-tools:variable key="historicalRuns" value="#[[]]" mediaType="application/java" /></munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Writes"><munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return></munit-tools:mock-when>
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Email Send"><munit-tools:then-return><munit-tools:payload value="#['SENT']" /></munit-tools:then-return></munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Updates"><munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return></munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Call compliance-orchestrator-flow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Status SUCCESS" actual="#[payload.status]" expected="#['SUCCESS']" />
+			<munit-tools:assert-equals doc:name="Assert isNilReport True" actual="#[payload.isNilReport]" expected="#[true]" />
+			<munit-tools:assert-equals doc:name="Assert Checksum NIL_REPORT" actual="#[payload.checksum]" expected="#['NIL_REPORT']" />
+			<munit-tools:assert-equals doc:name="Assert Record Count 0" actual="#[payload.recordCount]" expected="#[0]" />
+			<munit-tools:assert-equals doc:name="Assert Total Amount 0" actual="#[payload.totalAmount]" expected="#[0.00]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 3: Completeness Mismatch Prevents Submission and Archives -->
+	<munit:test name="test-compliance-orchestrator-completeness-mismatch" doc:id="test-003" description="Verify completeness mismatch aborts submission and preserves control pointer">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert"><munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return></munit-tools:mock-when>
+
+			<!-- Extracted returns 1 record -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Extracted Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="extractedRecords" value="#[[
+							{ transaction_id: 'TXN10001', transaction_timestamp: '2026-09-11 08:15:30', account_number: 'ACC987654321', customer_id: 'CUST001', customer_name: 'lokesh', customer_type: 'INDIVIDUAL', transaction_type: 'WIRE_TRANSFER', channel: 'ONLINE', currency: 'USD', amount: 250000.00, counterparty_name: 'Alpine', counterparty_country: 'CHE', flag_code: 'AML_HIGH_VALUE', flag_reason: 'High value', flagged_at: '2026-09-11 08:30:00', reviewer: 'lokesh', review_status: 'PENDING_REPORT' }
+						]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Aggregate returns 5 records (MISMATCH) -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Aggregate Mismatch Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 5, total_amount: 1500000.00, total_customers: 4 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Updates"><munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return></munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Call compliance-orchestrator-flow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Status FAILED" actual="#[payload.status]" expected="#['FAILED']" />
+			<munit-tools:assert-equals doc:name="Assert Error Type" actual="#[payload.errorType]" expected="#['COMPLIANCE:COMPLETENESS_MISMATCH']" />
+			<!-- Verify file write was never called -->
+			<munit-tools:verify-call processor="file:write" times="0" doc:name="Verify Zero File Writes" />
+			<!-- Verify email send was never called -->
+			<munit-tools:verify-call processor="email:send" times="0" doc:name="Verify Zero Email Dispatches" />
+			<!-- Verify control table pointer was never advanced -->
+			<munit-tools:verify-call processor="db:update" times="0" doc:name="Verify Zero Control Advances">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 4: Database Query / Connectivity Failure Handling (No Control Timestamp Advance) -->
+	<munit:test name="test-compliance-orchestrator-database-error" doc:id="test-004" description="Verify DB connectivity failure is caught by global error handler and control timestamp is preserved">
+		<munit:behavior>
+			<!-- Control Select fails with DB Connectivity Error -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select DB Failure">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:error typeId="DB:CONNECTIVITY" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Call compliance-orchestrator-flow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Status FAILED" actual="#[payload.status]" expected="#['FAILED']" />
+			<munit-tools:assert-equals doc:name="Assert Error Type DB:ERROR" actual="#[payload.errorType]" expected="#['DB:ERROR']" />
+			<!-- Verify control table was NOT updated -->
+			<munit-tools:verify-call processor="db:update" times="0" doc:name="Verify Control Pointer Unchanged">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<!-- Verify zero file writes -->
+			<munit-tools:verify-call processor="file:write" times="0" doc:name="Verify Zero File Writes" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 5: Historical Reprocessing Run (Safe Reprocessing & Duplicate Prevention) -->
+	<munit:test name="test-compliance-orchestrator-historical-reprocess" doc:id="test-005" description="Verify historical reprocess run generates revision without advancing master control timeline">
+		<munit:behavior>
+			<!-- Control record mock -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 1 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert">
+				<munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- 1 historical extracted record -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Extraction">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="extractedRecords" value="#[[
+							{ transaction_id: 'TXN09001', transaction_timestamp: '2026-09-09 10:00:00', account_number: 'ACC987654321', customer_id: 'CUST001', customer_name: 'lokesh', customer_type: 'INDIVIDUAL', transaction_type: 'WIRE_TRANSFER', channel: 'ONLINE', currency: 'USD', amount: 120000.00, counterparty_name: 'Nordic Prime Corp', counterparty_country: 'SWE', flag_code: 'AML_HIGH_VALUE', flag_reason: 'High value', flagged_at: '2026-09-09 10:15:00', reviewer: 'lokesh', review_status: 'PENDING_REPORT' }
+						]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Aggregate matches extracted (PASS) -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Aggregate Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 1, total_amount: 120000.00, total_customers: 1 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Baseline">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Select Last 5 Successful Runs" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables><munit-tools:variable key="historicalRuns" value="#[[]]" mediaType="application/java" /></munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Writes"><munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return></munit-tools:mock-when>
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Email Send"><munit-tools:then-return><munit-tools:payload value="#['SENT']" /></munit-tools:then-return></munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Updates"><munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return></munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Reprocess Event">
+				<munit:variables>
+					<munit:variable key="isHistoricalReprocess" value="#[true]" mediaType="application/java" />
+					<munit:variable key="manualPeriodStart" value="#['2026-09-09 00:00:00']" mediaType="application/java" />
+					<munit:variable key="manualPeriodEnd" value="#['2026-09-09 23:59:59']" mediaType="application/java" />
+					<munit:variable key="triggerSource" value="#['MANUAL_API']" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Call compliance-orchestrator-flow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Status SUCCESS" actual="#[payload.status]" expected="#['SUCCESS']" />
+			<munit-tools:assert-equals doc:name="Assert isRevision True" actual="#[payload.isRevision]" expected="#[true]" />
+			<munit-tools:assert-equals doc:name="Assert Record Count 1" actual="#[payload.recordCount]" expected="#[1]" />
+			<!-- Verify master control timeline was NOT advanced -->
+			<munit-tools:verify-call processor="db:update" times="0" doc:name="Verify Control Table NOT Advanced">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 6: Archive Filename Collision Handling (FILE:FILE_ALREADY_EXISTS) -->
+	<munit:test name="test-compliance-orchestrator-archive-collision" doc:id="test-006" description="Verify FILE:FILE_ALREADY_EXISTS on archive write triggers FILE:ARCHIVE_COLLISION error response and preserves database control state">
+		<munit:behavior>
+			<!-- Control record mock -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0 }]]" mediaType="application/java" />
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert">
+				<munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Streamed Extraction">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="extractedRecords" value="#[[
+							{ transaction_id: 'TXN15001', transaction_timestamp: '2026-09-11 08:00:00', account_number: 'ACC111', customer_id: 'CUST001', customer_name: 'test', customer_type: 'INDIVIDUAL', transaction_type: 'WIRE_TRANSFER', channel: 'ONLINE', currency: 'USD', amount: 50000.00, counterparty_name: 'CP', counterparty_country: 'USA', flag_code: 'AML_HIGH_VALUE', flag_reason: 'High value', flagged_at: '2026-09-11 08:30:00', reviewer: 'rev', review_status: 'PENDING_REPORT' }
+						]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Aggregate Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 1, total_amount: 50000.00, total_customers: 1 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Baseline">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Select Last 5 Successful Runs" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables><munit-tools:variable key="historicalRuns" value="#[[]]" mediaType="application/java" /></munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Output file write succeeds -->
+			<munit-tools:mock-when processor="file:write" doc:name="Mock Output Write">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Submission File (Output)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- Archive file write simulates FILE:FILE_ALREADY_EXISTS collision -->
+			<munit-tools:mock-when processor="file:write" doc:name="Mock Archive Collision">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Write Submission File (Archive)" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:error typeId="FILE:FILE_ALREADY_EXISTS" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<!-- DB Audit Update for FAILED status -->
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Audit Updates">
+				<munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Call compliance-orchestrator-flow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Status FAILED" actual="#[payload.status]" expected="#['FAILED']" />
+			<munit-tools:assert-equals doc:name="Assert Error Type FILE:ARCHIVE_COLLISION" actual="#[payload.errorType]" expected="#['FILE:ARCHIVE_COLLISION']" />
+			<munit-tools:assert-that doc:name="Assert Archive File Present" expression="#[payload.archiveFile]" is="#[MunitTools::notNullValue()]" />
+			
+			<!-- Master control pointer must NEVER be advanced on archive collision -->
+			<munit-tools:verify-call processor="db:update" times="0" doc:name="Verify Control Timeline NOT Advanced">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+
+			<!-- Email notification must NOT be dispatched on archive collision -->
+			<munit-tools:verify-call processor="email:send" times="0" doc:name="Verify Email NOT Dispatched" />
+
+			<!-- Database audit record must be updated for REPORT_GENERATED and FAILED states -->
+			<munit-tools:verify-call processor="db:update" times="2" doc:name="Verify Audit Update Called for FAILED">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Update Run Audit Status" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 7: Repeated Requests for Same Reporting Period Generate Unique Archive Filenames -->
+	<munit:test name="test-compliance-orchestrator-repeated-requests-unique-archive-filenames" doc:id="test-007" description="Verify repeated runs for the exact same reporting period generate unique, collision-free archive filenames">
+		<munit:behavior>
+			<!-- Mock Database Control Record -->
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Control Select">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Compliance Control Table" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0 }]]" mediaType="application/java" />
+					<munit-tools:variables>
+						<munit-tools:variable key="controlRecord" value="#[[{ control_id: 1, entity_code: 'ENT0091', report_type: 'STR', last_success_period_end: '2026-09-10 23:59:59', current_sequence_number: 0 }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:insert" doc:name="Mock Audit Insert">
+				<munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Streamed Extraction">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Streamed Extraction Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables><munit-tools:variable key="extractedRecords" value="#[[]]" mediaType="application/java" /></munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Zero Aggregate">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Aggregate Select" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:variables><munit-tools:variable key="aggregateTotals" value="#[[{ total_records: 0, total_amount: 0.00, total_customers: 0 }]]" mediaType="application/java" /></munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Select">
+				<munit-tools:then-return>
+					<munit-tools:variables><munit-tools:variable key="historicalRuns" value="#[[]]" mediaType="application/java" /></munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+
+			<munit-tools:mock-when processor="file:write" doc:name="Mock File Writes"><munit-tools:then-return><munit-tools:payload value="#['OK']" /></munit-tools:then-return></munit-tools:mock-when>
+			<munit-tools:mock-when processor="email:send" doc:name="Mock Email Send"><munit-tools:then-return><munit-tools:payload value="#['SENT']" /></munit-tools:then-return></munit-tools:mock-when>
+			<munit-tools:mock-when processor="db:update" doc:name="Mock DB Updates"><munit-tools:then-return><munit-tools:payload value="#[1]" /></munit-tools:then-return></munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<!-- First Run for reporting period -->
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Execute Run 1" />
+			<set-variable value="#[payload.archiveFile]" doc:name="Store Run 1 Archive File" variableName="run1ArchiveFile" />
+			<set-variable value="#[payload.summaryFile]" doc:name="Store Run 1 Summary File" variableName="run1SummaryFile" />
+
+			<!-- Second Run for same period -->
+			<flow-ref name="compliance-orchestrator-flow" doc:name="Execute Run 2" />
+			<set-variable value="#[payload.archiveFile]" doc:name="Store Run 2 Archive File" variableName="run2ArchiveFile" />
+			<set-variable value="#[payload.summaryFile]" doc:name="Store Run 2 Summary File" variableName="run2SummaryFile" />
+		</munit:execution>
+
+		<munit:validation>
+			<!-- Verify both runs succeeded -->
+			<munit-tools:assert-equals doc:name="Assert Run 2 Status SUCCESS" actual="#[payload.status]" expected="#['SUCCESS']" />
+			
+			<!-- Verify both archive filenames contain the expected base components: entity, report type -->
+			<munit-tools:assert-that doc:name="Assert Run 1 Has Base Pattern" 
+				expression="#[vars.run1ArchiveFile contains 'ENT0091_STR_']" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert Run 2 Has Base Pattern" 
+				expression="#[vars.run2ArchiveFile contains 'ENT0091_STR_']" is="#[MunitTools::equalTo(true)]" />
+			
+			<!-- CRITICAL ASSERTION: The two archive filenames MUST be distinct and unique (no collision!) -->
+			<munit-tools:assert-that doc:name="Assert Unique Archive Submission Filenames" 
+				expression="#[vars.run1ArchiveFile != vars.run2ArchiveFile]" is="#[MunitTools::equalTo(true)]" />
+			<munit-tools:assert-that doc:name="Assert Unique Archive Summary Filenames" 
+				expression="#[vars.run1SummaryFile != vars.run2SummaryFile]" is="#[MunitTools::equalTo(true)]" />
+		</munit:validation>
+	</munit:test>
+
+</mule>

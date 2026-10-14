@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration status="INFO" name="RegulatoryComplianceReportingLogConfig" packages="org.apache.logging.log4j.core">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%-5p %d [%t] [processor: %X{processorPath}; correlationId: %X{correlationId}] %c{1}: %m%n"/>
+        </Console>
+        <RollingFile name="file" fileName="${sys:mule.home}${sys:file.separator}logs${sys:file.separator}regulatory-compliance-reporting.log"
+                     filePattern="${sys:mule.home}${sys:file.separator}logs${sys:file.separator}regulatory-compliance-reporting-%d{yyyy-MM-dd}-%i.log">
+            <PatternLayout pattern="%-5p %d [%t] [processor: %X{processorPath}; correlationId: %X{correlationId}] %c{1}: %m%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="10 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="10"/>
+        </RollingFile>
+    </Appenders>
+    <Loggers>
+        <!-- Application specific logger -->
+        <AsyncLogger name="com.hackathon.compliance" level="INFO"/>
+        <!-- Mule and HTTP loggers -->
+        <AsyncLogger name="org.mule.service.http.impl.service.HttpMessageLogger" level="WARN"/>
+        <AsyncLogger name="org.mule.extension.db" level="INFO"/>
+        <AsyncLogger name="org.mule.extension.file" level="INFO"/>
+        <AsyncLogger name="org.mule.extension.mail" level="INFO"/>
+        
+        <AsyncRoot level="INFO">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="file"/>
+        </AsyncRoot>
+    </Loggers>
+</Configuration>

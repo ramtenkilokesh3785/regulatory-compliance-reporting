@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+	<munit:config name="compliance-api-test.xml" />
+
+	<!-- Test 1: GET /reports/runs/{runId} - Successful Retrieval -->
+	<munit:test name="test-get-report-run-by-id-success" doc:id="test-api-001" description="Verify API retrieves audit record for valid run ID">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Query Run Audit Record">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Run Audit Record" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[{
+						run_id: 'RUN-TEST-001',
+						entity_code: 'ENT0091',
+						entity_name: 'Apex Global Banking',
+						report_type: 'STR',
+						period_start: '2026-09-11 00:00:00',
+						period_end: '2026-09-11 23:59:59',
+						sequence_number: 1,
+						is_revision: 0,
+						record_count: 6,
+						total_amount: 1459900.00,
+						customer_count: 6,
+						completeness_result: 'PASS',
+						is_nil_report: 0,
+						output_file_path: 'C:/compliance-reporting/output/report.csv',
+						archive_file_path: 'C:/compliance-reporting/archive/report.csv',
+						summary_file_path: 'C:/compliance-reporting/archive/summary.json',
+						checksum: 'a1b2c3d4e5f6',
+						notification_status: 'SENT_ATTACHMENT',
+						trigger_source: 'SCHEDULED',
+						run_status: 'SUCCESS',
+						error_message: null,
+						correlation_id: 'CORR-001',
+						started_at: '2026-09-11 23:59:59',
+						completed_at: '2026-09-12 00:02:15'
+					}]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event URI Params">
+				<munit:attributes value="#[{ uriParams: { runId: 'RUN-TEST-001' } }]" mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref name="get:\reports\runs\(runId):compliance_api_config" doc:name="Call GET /reports/runs/{runId}" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Run ID" actual="#[payload.runId]" expected="#['RUN-TEST-001']" />
+			<munit-tools:assert-equals doc:name="Assert Status SUCCESS" actual="#[payload.runStatus]" expected="#['SUCCESS']" />
+			<munit-tools:assert-equals doc:name="Assert Record Count" actual="#[payload.recordCount]" expected="#[6]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: GET /reports/runs/{runId} - Not Found (404) -->
+	<munit:test name="test-get-report-run-by-id-not-found" doc:id="test-api-002" description="Verify API returns 404 when run ID does not exist">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Query Run Empty">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Run Audit Record" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Nonexistent URI Params">
+				<munit:attributes value="#[{ uriParams: { runId: 'RUN-NONEXISTENT' } }]" mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref name="get:\reports\runs\(runId):compliance_api_config" doc:name="Call GET /reports/runs/{runId}" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert HTTP 404" actual="#[vars.httpStatus]" expected="#['404']" />
+			<munit-tools:assert-equals doc:name="Assert Error Type" actual="#[payload.errorType]" expected="#['COMPLIANCE:RUN_NOT_FOUND']" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 3: GET /reports/runs - Paginated List Retrieval -->
+	<munit:test name="test-get-report-runs-list" doc:id="test-api-003" description="Verify API retrieves paginated audit run history">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Query Run History List">
+				<munit-tools:with-attributes>
+					<munit-tools:with-attribute whereValue="Query Run History List" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return>
+					<munit-tools:payload value="#[[
+						{
+							run_id: 'RUN-TEST-001',
+							entity_code: 'ENT0091',
+							entity_name: 'Apex Global Banking',
+							report_type: 'STR',
+							period_start: '2026-09-11 00:00:00',
+							period_end: '2026-09-11 23:59:59',
+							sequence_number: 1,
+							is_revision: 0,
+							record_count: 6,
+							total_amount: 1459900.00,
+							customer_count: 6,
+							completeness_result: 'PASS',
+							is_nil_report: 0,
+							output_file_path: 'C:/compliance-reporting/output/report.csv',
+							archive_file_path: 'C:/compliance-reporting/archive/report.csv',
+							summary_file_path: 'C:/compliance-reporting/archive/summary.json',
+							checksum: 'a1b2c3d4e5f6',
+							notification_status: 'SENT_ATTACHMENT',
+							trigger_source: 'SCHEDULED',
+							run_status: 'SUCCESS',
+							error_message: null,
+							correlation_id: 'CORR-001',
+							started_at: '2026-09-11 23:59:59',
+							completed_at: '2026-09-12 00:02:15'
+						}
+					]]" mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Event Query Params">
+				<munit:attributes value="#[{ queryParams: { limit: '10', offset: '0', status: 'SUCCESS' } }]" mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref name="get:\reports\runs:compliance_api_config" doc:name="Call GET /reports/runs" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Total" actual="#[payload.total]" expected="#[1]" />
+			<munit-tools:assert-equals doc:name="Assert Run ID in List" actual="#[payload.runs[0].runId]" expected="#['RUN-TEST-001']" />
+		</munit:validation>
+	</munit:test>
+
+</mule>

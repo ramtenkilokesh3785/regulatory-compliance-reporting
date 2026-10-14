@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- Subflow: Write Output Files, Archive Copies, and Verify Integrity -->
+	<sub-flow name="write-and-archive-reports-subflow" doc:name="Write and Archive Reports Subflow">
+		<logger level="INFO" doc:name="Log Starting File Generation" message="Preparing file naming, output creation and immutable archival." />
+		
+		<!-- 1. Compute Filenames and Target Paths -->
+		<ee:transform doc:name="Compute Filenames and Absolute Paths">
+			<ee:variables>
+				<ee:set-variable variableName="fileMetadata"><![CDATA[%dw 2.0
+output application/json
+var entityCode = vars.runContext.entityCode default "ENT0091"
+var reportType = vars.runContext.reportType default "STR"
+var periodDateStr = (vars.runContext.periodEnd[0 to 9] replace "-" with "") default "20260911"
+var seqStr = (vars.runContext.sequenceNumber as Number) as String {format: "000"}
+
+// Reliable unique run identifier to guarantee collision-free archival
+var runIdClean = ((vars.runContext.runId default ("RUN-" ++ (now() as String {format: "yyyyMMdd-HHmmss"}) ++ "-" ++ (uuid()[0 to 5]))) 
+                   replace "RUN-" with "" replace ":" with "" replace "/" with "" replace "\\" with "" replace " " with "_")
+
+var submissionFilename = entityCode ++ "_" ++ reportType ++ "_" ++ periodDateStr ++ "_" ++ seqStr ++ ".csv"
+var summaryFilename = entityCode ++ "_" ++ reportType ++ "_" ++ periodDateStr ++ "_" ++ seqStr ++ "_SUMMARY.txt"
+
+var archiveSubmissionFilename = entityCode ++ "_" ++ reportType ++ "_" ++ periodDateStr ++ "_" ++ seqStr ++ "_" ++ runIdClean ++ ".csv"
+var archiveSummaryFilename = entityCode ++ "_" ++ reportType ++ "_" ++ periodDateStr ++ "_" ++ seqStr ++ "_" ++ runIdClean ++ "_SUMMARY.txt"
+
+var outDir = p('directories.output')
+var arcDir = p('directories.archive')
+---
+{
+	submissionFilename: submissionFilename,
+	summaryFilename: summaryFilename,
+	archiveSubmissionFilename: archiveSubmissionFilename,
+	archiveSummaryFilename: archiveSummaryFilename,
+	outputSubmissionFilePath: outDir ++ "/" ++ submissionFilename,
+	archiveSubmissionFilePath: arcDir ++ "/" ++ archiveSubmissionFilename,
+	archiveSummaryFilePath: arcDir ++ "/" ++ archiveSummaryFilename
+}
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<set-variable value="#[vars.fileMetadata.submissionFilename]" doc:name="Set submissionFilename" variableName="submissionFilename" />
+		<set-variable value="#[vars.fileMetadata.summaryFilename]" doc:name="Set summaryFilename" variableName="summaryFilename" />
+		<set-variable value="#[vars.fileMetadata.archiveSubmissionFilename]" doc:name="Set archiveSubmissionFilename" variableName="archiveSubmissionFilename" />
+		<set-variable value="#[vars.fileMetadata.archiveSummaryFilename]" doc:name="Set archiveSummaryFilename" variableName="archiveSummaryFilename" />
+		<set-variable value="#[vars.fileMetadata.outputSubmissionFilePath]" doc:name="Set outputSubmissionFilePath" variableName="outputSubmissionFilePath" />
+		<set-variable value="#[vars.fileMetadata.archiveSubmissionFilePath]" doc:name="Set archiveSubmissionFilePath" variableName="archiveSubmissionFilePath" />
+		<set-variable value="#[vars.fileMetadata.archiveSummaryFilePath]" doc:name="Set archiveSummaryFilePath" variableName="archiveSummaryFilePath" />
+
+		<!-- 2. Write Submission File to Output Directory -->
+		<logger level="INFO" doc:name="Log Writing Output File" message="Writing submission file to #[vars.outputSubmissionFilePath]" />
+		<file:write doc:name="Write Submission File (Output)" 
+			config-ref="Compliance_Output_File_Config" 
+			path="#[vars.submissionFilename]" 
+			mode="OVERWRITE">
+			<file:content><![CDATA[#[vars.submissionFileContent]]]></file:content>
+		</file:write>
+
+		<!-- 3. Write Immutable Submission File to Archive Directory (CREATE_NEW to prevent overwrite) -->
+		<logger level="INFO" doc:name="Log Archiving Submission" message="Writing immutable submission file to archive: #[vars.archiveSubmissionFilePath]" />
+		<file:write doc:name="Write Submission File (Archive)" 
+			config-ref="Compliance_Archive_File_Config" 
+			path="#[vars.archiveSubmissionFilename default vars.submissionFilename]" 
+			mode="CREATE_NEW">
+			<file:content><![CDATA[#[vars.submissionFileContent]]]></file:content>
+		</file:write>
+
+		<!-- 4. Write Summary File to Archive Directory -->
+		<logger level="INFO" doc:name="Log Archiving Summary" message="Writing summary file to archive: #[vars.archiveSummaryFilePath]" />
+		<file:write doc:name="Write Summary File (Archive)" 
+			config-ref="Compliance_Archive_File_Config" 
+			path="#[vars.archiveSummaryFilename default vars.summaryFilename]" 
+			mode="CREATE_NEW">
+			<file:content><![CDATA[#[vars.summaryFileContent]]]></file:content>
+		</file:write>
+
+		<!-- 5. Compute Attachment Size for Notification Routing -->
+		<ee:transform doc:name="Compute Total File Sizes &amp; Delivery Mode">
+			<ee:variables>
+				<ee:set-variable variableName="fileSizeMetrics"><![CDATA[%dw 2.0
+output application/json
+var subBytes = sizeOf(vars.submissionFileContent as Binary)
+var sumBytes = sizeOf(vars.summaryFileContent as Binary)
+var totalBytes = subBytes + sumBytes
+var maxBytes = (p('compliance.maxAttachmentSizeBytes') default 10485760) as Number
+var isOversized = totalBytes > maxBytes
+---
+{
+	submissionSizeBytes: subBytes,
+	summarySizeBytes: sumBytes,
+	totalSizeBytes: totalBytes,
+	maxAttachmentSizeBytes: maxBytes,
+	isOversized: isOversized,
+	notificationMode: if (isOversized) "SECURE_LINK" else "ATTACHMENT"
+}
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<set-variable value="#[vars.fileSizeMetrics.notificationMode]" doc:name="Set notificationMode" variableName="notificationMode" />
+		
+		<logger level="INFO" doc:name="Log Archival Verified" 
+			message="Report generation and archival completed. Total Size: #[vars.fileSizeMetrics.totalSizeBytes] bytes. Notification Mode: #[vars.notificationMode]" />
+	</sub-flow>
+
+</mule>

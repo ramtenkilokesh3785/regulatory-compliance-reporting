@@ -1,0 +1,338 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- Subflow: Independent Completeness Validation -->
+	<sub-flow name="validate-completeness-subflow" doc:name="Validate Completeness Subflow">
+		<logger level="INFO" doc:name="Log Completeness Check" message="Executing independent completeness validation check." />
+		
+		<ee:transform doc:name="Compare Extracted vs Aggregate Metrics">
+			<ee:variables>
+				<ee:set-variable variableName="completenessValidation"><![CDATA[%dw 2.0
+output application/json
+var records = vars.extractedRecords default []
+var agg = vars.aggregateTotals[0] default {}
+
+var extractedCount = sizeOf(records)
+var aggCount = (agg.total_records default 0) as Number
+
+var extractedAmount = sum(records map ((r) -> (r.amount default 0.00) as Number)) default 0.00
+var aggAmount = (agg.total_amount default 0.00) as Number
+
+var extractedCustomers = sizeOf(records distinctBy ((r) -> r.customer_id default r.customerId))
+var aggCustomers = (agg.total_customers default 0) as Number
+
+var countMatches = (extractedCount == aggCount)
+var amountMatches = (abs(extractedAmount - aggAmount) < 0.009)
+var customerMatches = (extractedCustomers == aggCustomers)
+
+var isMatch = countMatches and amountMatches and customerMatches
+---
+{
+	isMatch: isMatch,
+	result: if (isMatch) "PASS" else "FAIL",
+	extractedCount: extractedCount,
+	aggCount: aggCount,
+	extractedAmount: extractedAmount,
+	aggAmount: aggAmount,
+	extractedCustomers: extractedCustomers,
+	aggCustomers: aggCustomers,
+	discrepancies: {
+		countMatch: countMatches,
+		amountMatch: amountMatches,
+		customerMatch: customerMatches
+	}
+}
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<choice doc:name="Check Completeness Result">
+			<when expression="#[!vars.completenessValidation.isMatch]">
+				<logger level="ERROR" doc:name="Log Completeness Mismatch" 
+					message="CRITICAL: Completeness mismatch detected! Extracted [count: #[vars.completenessValidation.extractedCount], amt: #[vars.completenessValidation.extractedAmount], cust: #[vars.completenessValidation.extractedCustomers]] vs Aggregate [count: #[vars.completenessValidation.aggCount], amt: #[vars.completenessValidation.aggAmount], cust: #[vars.completenessValidation.aggCustomers]]" />
+				<raise-error doc:name="Raise Completeness Mismatch Error" 
+					type="COMPLIANCE:COMPLETENESS_MISMATCH" 
+					description="Extracted records do not reconcile with independent database aggregate query." />
+			</when>
+			<otherwise>
+				<logger level="INFO" doc:name="Log Completeness Verified" 
+					message="Completeness check PASSED. Record Count: #[vars.completenessValidation.extractedCount], Total Amount: #[vars.completenessValidation.extractedAmount], Unique Customers: #[vars.completenessValidation.extractedCustomers]" />
+			</otherwise>
+		</choice>
+	</sub-flow>
+
+	<!-- Subflow: Generate Report Files (CSV submission & Text Summary) -->
+	<sub-flow name="generate-report-payloads-subflow" doc:name="Generate Report Payloads Subflow">
+		<logger level="INFO" doc:name="Log Generating Report" message="Transforming extracted records into prescribed pipe-delimited layout and summary." />
+		
+		<!-- 1. Generate Header Line -->
+		<ee:transform doc:name="Generate Header Record (H)">
+			<ee:variables>
+				<ee:set-variable variableName="headerLine"><![CDATA[%dw 2.0
+output text/plain
+fun sanitize(val: Any) = 
+  if (val == null) "" 
+  else (val as String replace "|" with "-" replace "\n" with " " replace "\r" with "")
+
+var entityCode = sanitize(vars.runContext.entityCode)
+var entityName = sanitize(vars.runContext.entityName)
+var reportType = sanitize(vars.runContext.reportType)
+var periodDate = (vars.runContext.periodEnd[0 to 9]) default (now() as String {format: "yyyy-MM-dd"})
+var generatedAt = (vars.runContext.generatedAt as String) default (now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"})
+var sequenceNumber = (vars.runContext.sequenceNumber as Number) as String {format: "000"}
+var currency = sanitize(vars.runContext.currency default "USD")
+---
+["H", entityCode, entityName, reportType, periodDate, generatedAt, sequenceNumber, currency] joinBy "|"
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 2. Generate Detail Records (D) sorted deterministically -->
+		<ee:transform doc:name="Generate Detail Records (D)">
+			<ee:variables>
+				<ee:set-variable variableName="detailSection"><![CDATA[%dw 2.0
+output text/plain
+fun sanitize(val: Any) = 
+  if (val == null) "" 
+  else (val as String replace "|" with "-" replace "\n" with " " replace "\r" with "")
+
+fun formatTimestamp(ts: Any) = 
+  if (ts == null) ""
+  else (ts as DateTime as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"}) default (ts as String)
+
+fun formatAmount(amt: Any) = 
+  if (amt == null) "0.00"
+  else (amt as Number as String {format: "0.00"})
+
+var records = (vars.extractedRecords default []) orderBy (item) -> ((item.flagged_at default item.flaggedAt default "") ++ "_" ++ (item.transaction_id default item.transactionId default ""))
+---
+if (isEmpty(records)) ""
+else
+  (records map ((item, index) -> 
+    [
+      "D",
+      (index + 1) as String,
+      sanitize(item.transaction_id default item.transactionId),
+      formatTimestamp(item.transaction_timestamp default item.transactionTimestamp),
+      sanitize(item.account_number default item.accountNumber),
+      sanitize(item.customer_id default item.customerId),
+      sanitize(item.customer_name default item.customerName),
+      sanitize(item.customer_type default item.customerType),
+      sanitize(item.transaction_type default item.transactionType),
+      sanitize(item.channel),
+      sanitize(item.currency default vars.runContext.currency default "USD"),
+      formatAmount(item.amount),
+      sanitize(item.counterparty_name default item.counterpartyName),
+      sanitize(item.counterparty_country default item.counterpartyCountry),
+      sanitize(item.flag_code default item.flagCode),
+      sanitize(item.flag_reason default item.flagReason),
+      formatTimestamp(item.flagged_at default item.flaggedAt),
+      sanitize(item.reviewer default item.reviewedBy),
+      sanitize(item.review_status default item.reviewStatus)
+    ] joinBy "|"
+  )) joinBy "\n"
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 3. Calculate Checksum & Run Metrics -->
+		<ee:transform doc:name="Compute Detail SHA-256 Checksum &amp; Run Metrics">
+			<ee:variables>
+				<ee:set-variable variableName="runMetrics"><![CDATA[%dw 2.0
+import dw::Crypto
+import dw::core::Binaries
+output application/json
+
+var records = vars.extractedRecords default []
+var recordCount = sizeOf(records)
+
+var totalAmount =
+    sum(
+        records map ((r) ->
+            (r.amount default 0.00) as Number
+        )
+    ) default 0.00
+
+var customerCount =
+    sizeOf(
+        records distinctBy ((r) ->
+            r.customer_id default r.customerId
+        )
+    )
+
+// Calculate the SHA-256 checksum.
+var checksum =
+    if (recordCount == 0)
+        "NIL_REPORT"
+    else
+        upper(
+            Binaries::toHex(
+                Crypto::hashWith(
+                    (vars.detailSection as String) as Binary,
+                    "SHA-256"
+                )
+            )
+        )
+
+---
+{
+    recordCount: recordCount,
+    totalAmount: totalAmount,
+    customerCount: customerCount,
+    completenessResult: "PASS",
+    checksum: checksum,
+    isNilReport: recordCount == 0
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 4. Generate Trailer Record (T) -->
+		<ee:transform doc:name="Generate Trailer Record (T)">
+			<ee:variables>
+				<ee:set-variable variableName="trailerLine"><![CDATA[%dw 2.0
+output text/plain
+var recordCount = (vars.runMetrics.recordCount default 0) as Number
+var totalAmount = (vars.runMetrics.totalAmount default 0.00) as Number as String {format: "0.00"}
+var customerCount = (vars.runMetrics.customerCount default 0) as Number
+var generatedAt = (vars.runContext.generatedAt as String) default (now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"})
+var checksum = vars.runMetrics.checksum default "NIL_REPORT"
+---
+["T", recordCount as String, totalAmount, customerCount as String, generatedAt, checksum] joinBy "|"
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 5. Assemble Complete Pipe-Delimited Submission Content -->
+		<ee:transform doc:name="Assemble Submission CSV Content">
+			<ee:variables>
+				<ee:set-variable variableName="submissionFileContent"><![CDATA[%dw 2.0
+output text/plain
+var details = vars.detailSection default ""
+---
+vars.headerLine ++ "\n" ++ 
+(if (!isEmpty(details)) (details ++ "\n") else "") ++ 
+vars.trailerLine ++ "\n"
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 6. Retrieve Historical Baseline & Compute Volume Deviation -->
+		<flow-ref name="get-historical-runs-subflow" doc:name="Get Historical Runs Subflow" />
+
+		<ee:transform doc:name="Perform Volume Deviation Analysis">
+			<ee:variables>
+				<ee:set-variable variableName="volumeAnalysis"><![CDATA[%dw 2.0
+output application/json
+var history = vars.historicalRuns default []
+var validHistory = history filter (item) -> (item.run_status == "SUCCESS" or item.runStatus == "SUCCESS")
+var historyCount = sizeOf(validHistory)
+
+var avgRecordCount = if (historyCount > 0) 
+    (sum(validHistory map ((item) -> (item.record_count default item.recordCount default 0) as Number)) / historyCount)
+  else 0.0
+
+var avgTotalAmount = if (historyCount > 0) 
+    (sum(validHistory map ((item) -> (item.total_amount default item.totalAmount default 0.00) as Number)) / historyCount)
+  else 0.00
+
+var currentRecords = (vars.runMetrics.recordCount default 0) as Number
+var currentAmount = (vars.runMetrics.totalAmount default 0.00) as Number
+
+var recordDeviationPct = if (avgRecordCount > 0)
+    (((currentRecords - avgRecordCount) / avgRecordCount) * 100)
+  else 0.0
+
+var amountDeviationPct = if (avgTotalAmount > 0)
+    (((currentAmount - avgTotalAmount) / avgTotalAmount) * 100)
+  else 0.0
+
+var thresholdPct = (p('compliance.deviationThresholdPct') default 50.0) as Number
+var hasDeviationAlert = if (historyCount > 0)
+    (abs(recordDeviationPct) >= thresholdPct or abs(amountDeviationPct) >= thresholdPct)
+  else false
+---
+{
+  historicalRunsEvaluated: historyCount,
+  avgRecordCount: avgRecordCount as String {format: "0.0"},
+  avgTotalAmount: avgTotalAmount as String {format: "0.00"},
+  currentRecordCount: currentRecords,
+  currentTotalAmount: currentAmount as String {format: "0.00"},
+  recordDeviationPct: (if (recordDeviationPct > 0) "+" else "") ++ (recordDeviationPct as String {format: "0.0"}) ++ "%",
+  amountDeviationPct: (if (amountDeviationPct > 0) "+" else "") ++ (amountDeviationPct as String {format: "0.0"}) ++ "%",
+  thresholdPct: thresholdPct as String {format: "0.0"} ++ "%",
+  hasDeviationAlert: hasDeviationAlert,
+  deviationSeverity: if (!hasDeviationAlert) "NORMAL"
+                     else if (abs(recordDeviationPct) > 100 or abs(amountDeviationPct) > 100) "HIGH_DEVIATION"
+                     else "MODERATE_DEVIATION"
+}
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 7. Generate Summary Text Report -->
+		<ee:transform doc:name="Generate Summary Report Content">
+			<ee:variables>
+				<ee:set-variable variableName="summaryFileContent"><![CDATA[%dw 2.0
+output text/plain
+fun formatAmount(amt: Any) = 
+  if (amt == null) "0.00"
+  else (amt as Number as String {format: "#,##0.00"})
+
+var runCtx = vars.runContext default {}
+var metrics = vars.runMetrics default {}
+var volAnalysis = vars.volumeAnalysis default {}
+var flagGroups = (vars.extractedRecords default []) groupBy ((item) -> item.flag_code default item.flagCode default "UNKNOWN")
+var isNil = (metrics.recordCount default 0) == 0
+---
+"================================================================================" ++ "\n" ++
+"           REGULATORY COMPLIANCE REPORTING - EXECUTIVE SUMMARY                 " ++ "\n" ++
+"================================================================================" ++ "\n" ++
+"Report Type          : " ++ (runCtx.reportType default "STR") ++ " (Suspicious Transaction Report)\n" ++
+"Reporting Entity     : " ++ (runCtx.entityName default "Apex Global Banking") ++ " [" ++ (runCtx.entityCode default "ENT0091") ++ "]\n" ++
+"Currency             : " ++ (runCtx.currency default "USD") ++ "\n" ++
+"Run ID               : " ++ (runCtx.runId default "N/A") ++ "\n" ++
+"Correlation ID       : " ++ (runCtx.correlationId default "N/A") ++ "\n" ++
+"Trigger Source       : " ++ (runCtx.triggerSource default "SCHEDULED") ++ "\n" ++
+"Sequence Number      : " ++ (runCtx.sequenceNumber as Number as String {format: "000"}) ++ (if (runCtx.isRevision default false) " [REVISION]" else " [ORIGINAL]") ++ "\n" ++
+"Reporting Period     : " ++ (runCtx.periodStart as String) ++ " to " ++ (runCtx.periodEnd as String) ++ "\n" ++
+"Generated At         : " ++ (runCtx.generatedAt as String) ++ "\n" ++
+"--------------------------------------------------------------------------------\n" ++
+"                         TRANSACTION TOTALS & INTEGRITY                         \n" ++
+"--------------------------------------------------------------------------------\n" ++
+"Nil Report Status    : " ++ (if (isNil) "YES (NIL REPORT - ZERO QUALIFYING TRANSACTIONS)" else "NO") ++ "\n" ++
+"Total Flagged Records: " ++ ((metrics.recordCount default 0) as String) ++ "\n" ++
+"Total Transaction Val: " ++ (runCtx.currency default "USD") ++ " " ++ formatAmount(metrics.totalAmount default 0.00) ++ "\n" ++
+"Distinct Customers   : " ++ ((metrics.customerCount default 0) as String) ++ "\n" ++
+"Completeness Check   : " ++ (metrics.completenessResult default "PASS") ++ " (Extracted vs Independent Aggregate Query: MATCH)\n" ++
+"SHA-256 Checksum     : " ++ (metrics.checksum default "NIL_REPORT") ++ "\n" ++
+"--------------------------------------------------------------------------------\n" ++
+"                        VOLUME DEVIATION & THRESHOLD ANALYSIS                   \n" ++
+"--------------------------------------------------------------------------------\n" ++
+"Historical Runs Base : " ++ (volAnalysis.historicalRunsEvaluated default 0 as String) ++ " runs\n" ++
+"Avg Historical Count : " ++ (volAnalysis.avgRecordCount default "0.0") ++ " records\n" ++
+"Avg Historical Amount: " ++ (runCtx.currency default "USD") ++ " " ++ (volAnalysis.avgTotalAmount default "0.00") ++ "\n" ++
+"Volume Deviation Pct : Records: " ++ (volAnalysis.recordDeviationPct default "0.0%") ++ ", Amount: " ++ (volAnalysis.amountDeviationPct default "0.0%") ++ "\n" ++
+"Deviation Status     : " ++ (if (volAnalysis.hasDeviationAlert default false) "WARNING - DEVIATION EXCEEDS " ++ (volAnalysis.thresholdPct default "50.0%") else "NORMAL") ++ "\n" ++
+"--------------------------------------------------------------------------------\n" ++
+"                           BREAKDOWN BY COMPLIANCE FLAG                         \n" ++
+"--------------------------------------------------------------------------------\n" ++
+(if (isNil) "No compliance flags recorded for this reporting period.\n"
+ else 
+   (flagGroups pluck ((records, flagCode) -> 
+      "  - " ++ (flagCode as String) ++ ": " ++ (sizeOf(records) as String) ++ " record(s), Total: " ++ 
+      (runCtx.currency default "USD") ++ " " ++ formatAmount(sum(records map ((r) -> (r.amount default 0) as Number)))
+   )) joinBy "\n" ++ "\n"
+) ++
+"================================================================================" ++ "\n"
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</sub-flow>
+
+</mule>

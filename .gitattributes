@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.xml text eol=lf
+*.dwl text eol=lf
+*.raml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf
+*.md text eol=lf
+*.csv text eol=lf
+*.json text eol=lf

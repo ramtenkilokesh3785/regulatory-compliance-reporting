@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- Global Reusable Error Handler -->
+	<error-handler name="global-compliance-error-handler" doc:name="Global Compliance Error Handler">
+
+		<!-- 1. Completeness Mismatch Error -->
+		<on-error-continue enableNotifications="true" logException="true" 
+			type="COMPLIANCE:COMPLETENESS_MISMATCH" doc:name="On Error - Completeness Mismatch">
+			<logger level="ERROR" doc:name="Log Completeness Failure" 
+				message="HANDLED ERROR: Completeness mismatch in Run ID: #[vars.runContext.runId default 'N/A']. Reporting control preserved." />
+			<set-variable value="FAILED" doc:name="Set currentRunStatus FAILED" variableName="currentRunStatus" />
+			<set-variable value="#[error.description default 'Independent completeness aggregate check failed.']" 
+				doc:name="Set runErrorMessage" variableName="runErrorMessage" />
+			<ee:transform doc:name="Set Failed Run Metrics">
+				<ee:variables>
+					<ee:set-variable variableName="runMetrics"><![CDATA[%dw 2.0
+output application/json
+---
+{
+	recordCount: sizeOf(vars.extractedRecords default []),
+	totalAmount: sum((vars.extractedRecords default []) map ((r) -> (r.amount default 0.00) as Number)) default 0.00,
+	customerCount: sizeOf((vars.extractedRecords default []) distinctBy ((r) -> r.customer_id default r.customerId)),
+	completenessResult: "FAIL",
+	checksum: "NIL_REPORT",
+	isNilReport: false
+}
+]]></ee:set-variable>
+				</ee:variables>
+			</ee:transform>
+			<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit Status FAILED" />
+			<ee:transform doc:name="Build Error Response Payload">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+	correlationId: vars.runContext.correlationId default correlationId,
+	runId: vars.runContext.runId,
+	errorType: "COMPLIANCE:COMPLETENESS_MISMATCH",
+	status: "FAILED",
+	message: "Completeness verification failed. Submission aborted to maintain compliance integrity.",
+	details: error.description
+}
+]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+		</on-error-continue>
+
+		<!-- 2. File Collision / Archive Error -->
+		<on-error-continue enableNotifications="true" logException="true" 
+			type="FILE:FILE_ALREADY_EXISTS, FILE:ACCESS_DENIED" doc:name="On Error - Archive Collision">
+			<logger level="ERROR" doc:name="Log Archive Collision" 
+				message="ARCHIVE COLLISION DETECTED: Target archive file already exists in immutable store or access was denied. Run ID: #[vars.runContext.runId default 'N/A'], Archive File: #[vars.archiveSubmissionFilePath default vars.submissionFilename default 'N/A'], Summary File: #[vars.archiveSummaryFilePath default vars.summaryFilename default 'N/A'], Write Mode: CREATE_NEW. Details: #[error.description default 'FILE_ALREADY_EXISTS']" />
+			<set-variable value="FAILED" doc:name="Set currentRunStatus FAILED" variableName="currentRunStatus" />
+			<set-variable value="#['Archive collision error: target file already exists in immutable archive (' ++ (vars.archiveSubmissionFilePath default vars.submissionFilename default 'unknown') ++ '). Operation rejected to maintain immutable compliance archive.']" 
+				doc:name="Set runErrorMessage" variableName="runErrorMessage" />
+			<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit Status FAILED" />
+			<ee:transform doc:name="Build Archive Error Response">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+	correlationId: vars.runContext.correlationId default correlationId,
+	runId: vars.runContext.runId,
+	errorType: "FILE:ARCHIVE_COLLISION",
+	status: "FAILED",
+	message: "Archive write rejected: target file already exists in immutable archive.",
+	archiveFile: vars.archiveSubmissionFilePath default vars.submissionFilename,
+	entityCode: vars.runContext.entityCode,
+	reportType: vars.runContext.reportType,
+	sequenceNumber: vars.runContext.sequenceNumber,
+	details: error.description
+}
+]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+		</on-error-continue>
+
+		<!-- 3. Database Connectivity / Query Execution Errors -->
+		<on-error-continue enableNotifications="true" logException="true" 
+			type="DB:CONNECTIVITY, DB:QUERY_EXECUTION, DB:RETRY_EXHAUSTED" doc:name="On Error - Database">
+			<logger level="ERROR" doc:name="Log Database Error" 
+				message="HANDLED ERROR: Database operation failed. Error: #[error.description]" />
+			<set-variable value="FAILED" doc:name="Set currentRunStatus FAILED" variableName="currentRunStatus" />
+			<set-variable value="#['Database failure: ' ++ (error.description default 'DB error')] " 
+				doc:name="Set runErrorMessage" variableName="runErrorMessage" />
+			<ee:transform doc:name="Build DB Error Response">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+	correlationId: vars.runContext.correlationId default correlationId,
+	runId: vars.runContext.runId default "N/A",
+	errorType: "DB:ERROR",
+	status: "FAILED",
+	message: "Database operation encountered a failure.",
+	details: error.description
+}
+]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+		</on-error-continue>
+
+		<!-- 4. Email / SMTP Delivery Errors -->
+		<on-error-continue enableNotifications="true" logException="true" 
+			type="EMAIL:CONNECTIVITY, EMAIL:SEND, EMAIL:RETRY_EXHAUSTED" doc:name="On Error - Email">
+			<logger level="ERROR" doc:name="Log Email Delivery Failure" 
+				message="HANDLED ERROR: Email notification failed after retries. Error: #[error.description]" />
+			<set-variable value="FAILED" doc:name="Set notificationStatus FAILED" variableName="notificationStatus" />
+			<set-variable value="FAILED" doc:name="Set currentRunStatus FAILED" variableName="currentRunStatus" />
+			<set-variable value="#['Email dispatch failure: ' ++ (error.description default 'SMTP error')]" 
+				doc:name="Set runErrorMessage" variableName="runErrorMessage" />
+			<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit Status FAILED" />
+			<ee:transform doc:name="Build Email Error Response">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+	correlationId: vars.runContext.correlationId default correlationId,
+	runId: vars.runContext.runId default "N/A",
+	errorType: "EMAIL:DELIVERY_FAILED",
+	status: "FAILED",
+	message: "Report generated and archived, but notification dispatch failed.",
+	details: error.description
+}
+]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+		</on-error-continue>
+
+		
+   		
+		<!-- 5. General / Any Fallback Error Handler -->
+		
+		<on-error-continue enableNotifications="true" logException="true" type="ANY" doc:name="On Error - Catch All">
+			<logger level="ERROR" doc:name="Log Catch-All Error" 
+				message="HANDLED ERROR: Unexpected error occurred during compliance workflow: #[error.description]" />
+			<set-variable value="FAILED" doc:name="Set currentRunStatus FAILED" variableName="currentRunStatus" />
+			<set-variable value="#['Unexpected processing error: ' ++ (error.description default 'Unknown error')]" 
+				doc:name="Set runErrorMessage" variableName="runErrorMessage" />
+			<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit Status FAILED" />
+			<ee:transform doc:name="Build Generic Error Response">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	timestamp: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"},
+	correlationId: vars.runContext.correlationId default correlationId,
+	runId: vars.runContext.runId default "N/A",
+	errorType: "COMPLIANCE:GENERAL_ERROR",
+	status: "FAILED",
+	message: "Compliance processing failed unexpectedly.",
+	details: error.description
+}
+]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+		</on-error-continue>
+
+	</error-handler>
+
+</mule>

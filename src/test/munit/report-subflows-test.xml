@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+	xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+	<munit:config name="report-subflows-test.xml" />
+
+	<!-- Test 1: Completeness Validation Passing Path -->
+	<munit:test name="test-validate-completeness-pass" doc:id="test-rep-001" description="Verify completeness check succeeds when extracted matches aggregate">
+		<munit:execution>
+			<munit:set-event doc:name="Set Extracted and Aggregate Events">
+				<munit:variables>
+					<munit:variable key="extractedRecords" value="#[[
+						{ transaction_id: 'TXN10001', customer_id: 'CUST001', amount: 100.00 },
+						{ transaction_id: 'TXN10002', customer_id: 'CUST002', amount: 200.00 }
+					]]" mediaType="application/java" />
+					<munit:variable key="aggregateTotals" value="#[[
+						{ total_records: 2, total_amount: 300.00, total_customers: 2 }
+					]]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="validate-completeness-subflow" doc:name="Call validate-completeness-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Validation Result PASS" 
+				actual="#[vars.completenessValidation.result]" expected="#['PASS']" />
+			<munit-tools:assert-equals doc:name="Assert isMatch True" 
+				actual="#[vars.completenessValidation.isMatch]" expected="#[true]" />
+		</munit:validation>
+	</munit:test>
+
+	<!-- Test 2: Report Payloads Generation & Prescribed Formatting -->
+	<munit:test name="test-generate-report-payloads" doc:id="test-rep-002" description="Verify Header, Detail, Checksum and Trailer layout">
+		<munit:behavior>
+			<munit-tools:mock-when processor="db:select" doc:name="Mock Historical Runs Select">
+				<munit-tools:then-return>
+					<munit-tools:variables>
+						<munit-tools:variable key="historicalRuns" value="#[[{ record_count: 2, total_amount: 300.00, run_status: 'SUCCESS' }]]" mediaType="application/java" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+
+		<munit:execution>
+			<munit:set-event doc:name="Set Report Generation Context">
+				<munit:variables>
+					<munit:variable key="runContext" value="#[{
+						runId: 'RUN-TEST-001',
+						entityCode: 'ENT0091',
+						entityName: 'Apex Global Banking',
+						reportType: 'STR',
+						currency: 'USD',
+						periodStart: '2026-09-11 00:00:00',
+						periodEnd: '2026-09-11 23:59:59',
+						sequenceNumber: 1,
+						isRevision: false,
+						generatedAt: '2026-09-11T23:59:59Z'
+					}]" mediaType="application/java" />
+					<munit:variable key="extractedRecords" value="#[[
+						{ transaction_id: 'TXN10001', transaction_timestamp: '2026-09-11 08:15:30', account_number: 'ACC987654321', customer_id: 'CUST001', customer_name: 'lokesh', customer_type: 'INDIVIDUAL', transaction_type: 'WIRE_TRANSFER', channel: 'ONLINE', currency: 'USD', amount: 250000.00, counterparty_name: 'Alpine', counterparty_country: 'CHE', flag_code: 'AML_HIGH_VALUE', flag_reason: 'High value wire', flagged_at: '2026-09-11 08:30:00', reviewer: 'lokesh', review_status: 'PENDING_REPORT' }
+					]]" mediaType="application/java" />
+				</munit:variables>
+			</munit:set-event>
+			<flow-ref name="generate-report-payloads-subflow" doc:name="Call generate-report-payloads-subflow" />
+		</munit:execution>
+
+		<munit:validation>
+			<munit-tools:assert-equals doc:name="Assert Header Starts with H|ENT0091" 
+				actual="#[(vars.headerLine startsWith 'H|ENT0091') as String]" expected="#['true']" />
+			<munit-tools:assert-equals doc:name="Assert Detail Starts with D|1|TXN10001" 
+				actual="#[(vars.detailSection startsWith 'D|1|TXN10001') as String]" expected="#['true']" />
+			<munit-tools:assert-equals doc:name="Assert Trailer Starts with T|1|250000.00" 
+				actual="#[(vars.trailerLine startsWith 'T|1|250000.00') as String]" expected="#['true']" />
+			<munit-tools:assert-equals doc:name="Assert Summary Content Not Empty" 
+				actual="#[(!isEmpty(vars.summaryFileContent)) as String]" expected="#['true']" />
+		</munit:validation>
+	</munit:test>
+
+</mule>

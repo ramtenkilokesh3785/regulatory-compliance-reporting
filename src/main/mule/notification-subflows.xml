@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:email="http://www.mulesoft.org/schema/mule/email"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/email http://www.mulesoft.org/schema/mule/email/current/mule-email.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- Subflow: Send Compliance Notification Email with Attachments or Secure Link -->
+	<sub-flow name="send-compliance-notification-subflow" doc:name="Send Compliance Notification Subflow">
+		<logger level="INFO" doc:name="Log Notification Dispatch" 
+			message="Preparing compliance notification dispatch. Mode: #[vars.notificationMode default 'ATTACHMENT']" />
+		
+		<!-- 1. Compute Email Metadata -->
+		<ee:transform doc:name="Compute Email Metadata">
+			<ee:variables>
+				<ee:set-variable variableName="emailSubject"><![CDATA[%dw 2.0
+output text/plain
+var prefix = p('email.subjectPrefix') default "[REGULATORY COMPLIANCE]"
+var entity = vars.runContext.entityCode default "ENT0091"
+var report = vars.runContext.reportType default "STR"
+var seq = vars.runContext.sequenceNumber as Number as String {format: "000"}
+var statusLabel = if ((vars.runMetrics.recordCount default 0) == 0) "NIL REPORT" 
+                  else (vars.runMetrics.recordCount as String) ++ " FLAGGED"
+var alertSuffix = if (vars.volumeAnalysis.hasDeviationAlert default false) " [VOLUME ALERT]" else ""
+---
+prefix ++ " " ++ entity ++ " " ++ report ++ " Seq #" ++ seq ++ " - " ++ statusLabel ++ alertSuffix
+]]></ee:set-variable>
+				<ee:set-variable variableName="secureDownloadUrl"><![CDATA[%dw 2.0
+output text/plain
+---
+(p('secureLink.baseUrl') default "https://compliance.internal.bank/portal/reports/download") ++ "?runId=" ++ (vars.runContext.runId default "N/A")
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 2. Generate HTML Email Body -->
+		<ee:transform doc:name="Generate HTML Email Body">
+			<ee:variables>
+				<ee:set-variable variableName="emailHtmlBody"><![CDATA[%dw 2.0
+output text/plain
+fun formatAmount(amt: Any) = 
+  if (amt == null) "0.00"
+  else (amt as Number as String {format: "#,##0.00"})
+
+var runCtx = vars.runContext default {}
+var metrics = vars.runMetrics default {}
+var volAnalysis = vars.volumeAnalysis default {}
+var flagGroups = (vars.extractedRecords default []) groupBy ((item) -> item.flag_code default item.flagCode default "UNKNOWN")
+var isNil = (metrics.recordCount default 0) == 0
+var hasAlert = volAnalysis.hasDeviationAlert default false
+var isSecureLink = (vars.notificationMode default "ATTACHMENT") == "SECURE_LINK"
+---
+"<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #2D3748; background-color: #F7FAFC; margin: 0; padding: 20px; }
+  .container { max-width: 680px; margin: 0 auto; background: #FFFFFF; border-radius: 8px; border: 1px solid #E2E8F0; overflow: hidden; }
+  .header { background: #1A365D; color: #FFFFFF; padding: 20px; }
+  .header h1 { margin: 0; font-size: 18px; }
+  .content { padding: 20px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #E2E8F0; }
+  th { background: #EDF2F7; }
+</style>
+</head>
+<body>
+<div class='container'>
+  <div class='header'>
+    <h1>Regulatory Compliance Notification - " ++ (runCtx.reportType default "STR") ++ "</h1>
+    <p>Entity: " ++ (runCtx.entityName default "Apex Global Banking") ++ " (" ++ (runCtx.entityCode default "ENT0091") ++ ")</p>
+  </div>
+  <div class='content'>
+    <p>A regulatory compliance report has been produced and verified.</p>
+    <table>
+      <tr><th>Run ID</th><td>" ++ (runCtx.runId default "N/A") ++ "</td></tr>
+      <tr><th>Reporting Period</th><td>" ++ (runCtx.periodStart as String) ++ " to " ++ (runCtx.periodEnd as String) ++ "</td></tr>
+      <tr><th>Sequence Number</th><td>#" ++ (runCtx.sequenceNumber as Number as String {format: "000"}) ++ "</td></tr>
+      <tr><th>Flagged Records</th><td>" ++ ((metrics.recordCount default 0) as String) ++ "</td></tr>
+      <tr><th>Total Amount</th><td>" ++ (runCtx.currency default "USD") ++ " " ++ formatAmount(metrics.totalAmount default 0.00) ++ "</td></tr>
+      <tr><th>Completeness Check</th><td>" ++ (metrics.completenessResult default "PASS") ++ "</td></tr>
+      <tr><th>SHA-256 Checksum</th><td><code>" ++ (metrics.checksum default "NIL_REPORT") ++ "</code></td></tr>
+      <tr><th>Archive Location</th><td><code>" ++ (vars.archiveSubmissionFilePath default "N/A") ++ "</code></td></tr>
+    </table>
+    " ++ (if (isSecureLink)
+      "<p><strong>Note:</strong> Files exceed email gateway limits and are available on the secure portal: <a href='" ++ (vars.secureDownloadUrl default "#") ++ "'>Download Report</a></p>"
+      else "<p>Submission CSV and Summary files are attached.</p>") ++ "
+  </div>
+</div>
+</body>
+</html>"
+]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+
+		<!-- 3. Dispatch Email Based on Notification Mode -->
+		<choice doc:name="Check Notification Mode">
+			<when expression="#[vars.notificationMode == 'SECURE_LINK']">
+				<logger level="INFO" doc:name="Log Sending Secure Link" message="Sending notification email with SECURE DOWNLOAD LINK to #[p('email.to')]" />
+				<email:send doc:name="Send Email (Secure Link)" 
+					config-ref="Compliance_Email_SMTP_Config" 
+					fromAddress="${email.from}" 
+					subject="#[vars.emailSubject]">
+					<email:to-addresses>
+						<email:to-address value="${email.to}" />
+					</email:to-addresses>
+					<email:body contentType="text/html">
+						<email:content><![CDATA[#[vars.emailHtmlBody]]]></email:content>
+					</email:body>
+				</email:send>
+				<set-variable value="SENT_SECURE_LINK" doc:name="Set notificationStatus SECURE_LINK" variableName="notificationStatus" />
+			</when>
+			<otherwise>
+				<logger level="INFO" doc:name="Log Sending with Attachments" message="Sending notification email with DIRECT ATTACHMENTS to #[p('email.to')]" />
+				<email:send doc:name="Send Email (With Attachments)" 
+					config-ref="Compliance_Email_SMTP_Config" 
+					fromAddress="${email.from}" 
+					subject="#[vars.emailSubject]">
+					<email:to-addresses>
+						<email:to-address value="${email.to}" />
+					</email:to-addresses>
+					<email:body contentType="text/html">
+						<email:content><![CDATA[#[vars.emailHtmlBody]]]></email:content>
+					</email:body>
+					<email:attachments><![CDATA[#[{
+						(vars.submissionFilename): vars.submissionFileContent,
+						(vars.summaryFilename): vars.summaryFileContent
+					}]]]></email:attachments>
+				</email:send>
+				<set-variable value="SENT_ATTACHMENT" doc:name="Set notificationStatus ATTACHMENT" variableName="notificationStatus" />
+			</otherwise>
+		</choice>
+
+		<logger level="INFO" doc:name="Log Notification Dispatched" 
+			message="Compliance notification sent successfully. Status: #[vars.notificationStatus]" />
+	</sub-flow>
+
+</mule>

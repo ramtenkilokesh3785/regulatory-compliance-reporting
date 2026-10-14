@@ -1,0 +1,168 @@
+#%RAML 1.0
+title: Regulatory Compliance Reporting API
+version: v1
+baseUri: http://localhost:8081/api/v1
+mediaType: application/json
+
+documentation:
+  - title: Compliance Reporting REST API
+    content: |
+      Provides endpoints for manual triggering, historical reprocessing,
+      and audit inspection for Regulatory Compliance Reporting (AML/STR).
+
+types:
+  RunReportRequest:
+    type: object
+    properties:
+      entityCode?:
+        type: string
+        required: false
+        example: "ENT0091"
+      reportType?:
+        type: string
+        required: false
+        example: "STR"
+      periodStart?:
+        type: datetime-only | string
+        required: false
+        example: "2026-09-11T00:00:00"
+      periodEnd?:
+        type: datetime-only | string
+        required: false
+        example: "2026-09-11T23:59:59"
+      isHistoricalReprocess?:
+        type: boolean
+        required: false
+        default: false
+
+  RunReportResponse:
+    type: object
+    properties:
+      runId: string
+      status: string
+      message: string
+      entityCode: string
+      reportType: string
+      periodStart: string
+      periodEnd: string
+      sequenceNumber: integer
+      isRevision: boolean
+      recordCount?: integer
+      totalAmount?: number
+      checksum?: string
+      submissionFile?: string
+      summaryFile?: string
+      archiveFile?: string
+
+  RunAuditRecord:
+    type: object
+    properties:
+      runId: string
+      entityCode: string
+      entityName: string
+      reportType: string
+      periodStart: string
+      periodEnd: string
+      sequenceNumber: integer
+      isRevision: boolean
+      recordCount: integer
+      totalAmount: number
+      customerCount: integer
+      completenessResult: string
+      isNilReport: boolean
+      outputFilePath: string | nil
+      archiveFilePath: string | nil
+      summaryFilePath: string | nil
+      checksum: string | nil
+      notificationStatus: string
+      triggerSource: string
+      runStatus: string
+      errorMessage: string | nil
+      correlationId: string | nil
+      startedAt: string
+      completedAt: string | nil
+
+  ErrorResponse:
+    type: object
+    properties:
+      timestamp: string
+      correlationId: string
+      errorType: string
+      message: string
+      details?: string
+
+/reports:
+  /run:
+    post:
+      displayName: Trigger Compliance Report Run
+      description: Initiates a scheduled or historical compliance reporting run synchronously or with execution status.
+      body:
+        application/json:
+          type: RunReportRequest
+      responses:
+        200:
+          body:
+            application/json:
+              type: RunReportResponse
+        400:
+          body:
+            application/json:
+              type: ErrorResponse
+        409:
+          body:
+            application/json:
+              type: ErrorResponse
+        500:
+          body:
+            application/json:
+              type: ErrorResponse
+
+  /runs:
+    get:
+      displayName: List Report Runs
+      description: Retrieves historical compliance report runs with pagination and optional status filter.
+      queryParameters:
+        limit:
+          type: integer
+          required: false
+          default: 20
+        offset:
+          type: integer
+          required: false
+          default: 0
+        status:
+          type: string
+          required: false
+          example: "SUCCESS"
+      responses:
+        200:
+          body:
+            application/json:
+              type: object
+              properties:
+                total: integer
+                limit: integer
+                offset: integer
+                runs: RunAuditRecord[]
+        500:
+          body:
+            application/json:
+              type: ErrorResponse
+
+    /{runId}:
+      get:
+        displayName: Get Report Run by ID
+        description: Retrieves the detailed audit record for a specific compliance run.
+        responses:
+          200:
+            body:
+              application/json:
+                type: RunAuditRecord
+          404:
+            body:
+              application/json:
+                type: ErrorResponse
+          500:
+            body:
+              application/json:
+                type: ErrorResponse

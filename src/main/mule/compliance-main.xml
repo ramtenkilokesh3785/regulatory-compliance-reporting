@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!-- Scheduled Trigger Flow for Automated Regulatory Compliance Reporting -->
+	<flow name="compliance-scheduled-trigger-flow" doc:name="Compliance Scheduled Trigger Flow">
+		<scheduler doc:name="Cron Scheduler">
+			<scheduling-strategy>
+				<cron expression="${compliance.cronExpression}" timeZone="${compliance.timezone}" />
+			</scheduling-strategy>
+		</scheduler>
+		<set-variable value="SCHEDULED" doc:name="Set triggerSource SCHEDULED" variableName="triggerSource" />
+		<logger level="INFO" doc:name="Log Scheduled Trigger Started" 
+			message="--- Compliance Scheduled Reporting Job Triggered [TimeZone: ${compliance.timezone}] ---" />
+		<flow-ref name="compliance-orchestrator-flow" doc:name="Execute Compliance Orchestrator" />
+	</flow>
+
+	<!-- Master Orchestrator Flow: Complete Auditable State Machine Workflow -->
+	<flow name="compliance-orchestrator-flow" doc:name="Compliance Orchestrator Flow">
+		<logger level="INFO" doc:name="Log Orchestrator Starting" 
+			message="Starting Compliance Orchestrator. Trigger Source: #[vars.triggerSource default 'SCHEDULED']" />
+		
+		<!-- 1. Determine Reporting Period Boundaries & Sequence from Control Table -->
+		<flow-ref name="get-reporting-period-control-subflow" doc:name="Get Control Subflow" />
+
+		<!-- 2. Persist Initial RUNNING Audit Record -->
+		<set-variable value="RUNNING" doc:name="Set currentRunStatus RUNNING" variableName="currentRunStatus" />
+		<flow-ref name="create-initial-audit-run-subflow" doc:name="Create Initial Audit Run" />
+
+		<!-- 3. Extract Flagged Transactions with Streamed Database Cursor -->
+		<flow-ref name="extract-flagged-transactions-subflow" doc:name="Extract Transactions Subflow" />
+
+		<!-- 4. Execute Independent Completeness Aggregate Query -->
+		<flow-ref name="execute-completeness-aggregate-subflow" doc:name="Execute Completeness Aggregate" />
+
+		<!-- 5. Validate Completeness (Extracted vs Independent Aggregate) -->
+		<flow-ref name="validate-completeness-subflow" doc:name="Validate Completeness" />
+
+		<!-- 6. Generate Header, Detail, SHA-256 Checksum, Trailer, Summary, and Volume Deviation -->
+		<flow-ref name="generate-report-payloads-subflow" doc:name="Generate Report Payloads" />
+
+		<!-- 7. Transition Audit State: REPORT_GENERATED -->
+		<set-variable value="REPORT_GENERATED" doc:name="Set currentRunStatus REPORT_GENERATED" variableName="currentRunStatus" />
+		<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit State - REPORT_GENERATED" />
+
+		<!-- 8. Write Submission CSV & Archive Immutable Files -->
+		<flow-ref name="write-and-archive-reports-subflow" doc:name="Write and Archive Reports" />
+
+		<!-- 9. Transition Audit State: ARCHIVED -->
+		<set-variable value="ARCHIVED" doc:name="Set currentRunStatus ARCHIVED" variableName="currentRunStatus" />
+		<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit State - ARCHIVED" />
+
+		<!-- 10. Send Email Notification (Attachments or Secure Link) -->
+		<flow-ref name="send-compliance-notification-subflow" doc:name="Send Compliance Notification" />
+
+		<!-- 11. Transition Audit State: NOTIFIED -->
+		<set-variable value="NOTIFIED" doc:name="Set currentRunStatus NOTIFIED" variableName="currentRunStatus" />
+		<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit State - NOTIFIED" />
+
+		<!-- 12. Mark Extracted Transaction Flags as REPORTED -->
+		<flow-ref name="mark-flags-reported-subflow" doc:name="Mark Flags Reported" />
+
+		<!-- 13. Advance Reporting Control Timestamp & Sequence in compliance_report_control -->
+		<flow-ref name="advance-reporting-control-subflow" doc:name="Advance Reporting Control" />
+
+		<!-- 14. Transition Audit State: SUCCESS -->
+		<set-variable value="SUCCESS" doc:name="Set currentRunStatus SUCCESS" variableName="currentRunStatus" />
+		<flow-ref name="update-audit-run-status-subflow" doc:name="Update Audit State - SUCCESS" />
+
+		<!-- 15. Return Final Output Result Payload -->
+		<ee:transform doc:name="Build Final Orchestration Result">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	runId: vars.runContext.runId,
+	status: "SUCCESS",
+	message: "Compliance reporting run completed successfully.",
+	entityCode: vars.runContext.entityCode,
+	reportType: vars.runContext.reportType,
+	periodStart: vars.runContext.periodStart,
+	periodEnd: vars.runContext.periodEnd,
+	sequenceNumber: vars.runContext.sequenceNumber,
+	isRevision: vars.runContext.isRevision,
+	recordCount: vars.runMetrics.recordCount,
+	totalAmount: vars.runMetrics.totalAmount,
+	customerCount: vars.runMetrics.customerCount,
+	isNilReport: vars.runMetrics.isNilReport,
+	checksum: vars.runMetrics.checksum,
+	notificationStatus: vars.notificationStatus,
+	notificationMode: vars.notificationMode,
+	submissionFile: vars.outputSubmissionFilePath,
+	archiveFile: vars.archiveSubmissionFilePath,
+	summaryFile: vars.archiveSummaryFilePath
+}
+]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		
+		<logger level="INFO" doc:name="Log Run Completed" 
+			message="=== Compliance Run #[vars.runContext.runId] COMPLETED WITH STATUS: SUCCESS ===" />
+
+		<error-handler ref="global-compliance-error-handler" />
+	</flow>
+
+</mule>

@@ -1,0 +1,545 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xsi:schemaLocation=" http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+<!--  Subflow: Retrieve Reporting Control & Calculate Period Boundaries  -->
+<sub-flow name="get-reporting-period-control-subflow" doc:name="Get Reporting Period Control Subflow">
+<logger level="INFO" doc:name="Log Fetching Control" message="Fetching reporting control for Entity: #[vars.entityCode default p('compliance.entityCode')], Report Type: #[vars.reportType default p('compliance.reportType')]"/>
+<db:select doc:name="Query Compliance Control Table" config-ref="Compliance_Database_Config" target="controlRecord">
+<db:sql>
+<![CDATA[ 
+
+				SELECT 
+
+					c.control_id, 
+
+					c.entity_code, 
+
+					c.report_type, 
+
+					c.last_success_period_end, 
+
+					c.current_sequence_number,
+
+					(SELECT COALESCE(MAX(r.sequence_number), 0)
+
+					 FROM compliance_report_runs r
+
+					 WHERE r.entity_code = c.entity_code
+
+					   AND r.report_type = c.report_type
+
+					   AND (
+
+					     (:manualPeriodEnd IS NOT NULL AND (DATE(r.period_end) = DATE(:manualPeriodEnd) OR r.period_end = :manualPeriodEnd))
+
+					     OR
+
+					     (:manualPeriodEnd IS NULL AND (DATE(r.period_end) = DATE(DATE_ADD(c.last_success_period_end, INTERVAL 1 DAY)) OR c.last_success_period_end IS NULL))
+
+					   )
+
+					) AS max_period_sequence
+
+				FROM compliance_report_control c 
+
+				WHERE c.entity_code = :entityCode AND c.report_type = :reportType
+
+				LIMIT 1
+
+			 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+				entityCode: vars.entityCode default p('compliance.entityCode'),
+
+				reportType: vars.reportType default p('compliance.reportType'),
+
+				manualPeriodEnd: vars.manualPeriodEnd
+
+			}] ]]>
+</db:input-parameters>
+</db:select>
+<ee:transform doc:name="Compute Run Context &amp; Boundaries">
+<ee:variables>
+<ee:set-variable variableName="runContext">
+<![CDATA[ %dw 2.0
+
+output application/json
+
+fun parseDateTimeSafe(val: Any) = 
+
+  if (val == null) null
+
+  else if (val is DateTime) val
+
+  else if (val is LocalDateTime) val as DateTime
+
+  else (((val as String) replace " " with "T") as DateTime) default (now())
+
+
+
+var ctrl = vars.controlRecord[0] default {}
+
+var entityCode = vars.entityCode default ctrl.entity_code default p('compliance.entityCode')
+
+var entityName = p('compliance.entityName')
+
+var reportType = vars.reportType default ctrl.report_type default p('compliance.reportType')
+
+var currency = p('compliance.currency')
+
+
+
+// Check if manual historical period was provided
+
+var isManual = vars.manualPeriodStart != null and vars.manualPeriodEnd != null
+
+var isReprocess = vars.isHistoricalReprocess default false
+
+
+
+var lastSuccessEnd = if (ctrl.last_success_period_end != null) parseDateTimeSafe(ctrl.last_success_period_end) else null
+
+
+
+var periodStart = if (isManual) (vars.manualPeriodStart as String)
+
+                  else if (lastSuccessEnd != null) 
+
+                    ((lastSuccessEnd + |PT1S|) as String {format: "yyyy-MM-dd HH:mm:ss"})
+
+                  else "2026-09-11 00:00:00"
+
+
+
+var periodEnd = if (isManual) (vars.manualPeriodEnd as String)
+
+                else if (lastSuccessEnd != null)
+
+                  (((lastSuccessEnd + |P1D|) as String {format: "yyyy-MM-dd"}) ++ " 23:59:59")
+
+                else "2026-09-11 23:59:59"
+
+
+
+// Concurrency-safe, monotonically incrementing sequence calculation:
+
+// If prior runs exist for this reporting period (revisions, retries, or manual runs), advance past the maximum existing sequence.
+
+var maxPeriodSeq = (ctrl.max_period_sequence default 0) as Number
+
+var ctrlSeq = (ctrl.current_sequence_number default 0) as Number
+
+var baseSeq = if (maxPeriodSeq > 0) maxPeriodSeq else ctrlSeq
+
+var nextSeq = baseSeq + 1
+
+var runId = "RUN-" ++ (now() as String {format: "yyyyMMdd-HHmmss"}) ++ "-" ++ (uuid()[0 to 5])
+
+---
+
+{
+
+	runId: runId,
+
+	entityCode: entityCode,
+
+	entityName: entityName,
+
+	reportType: reportType,
+
+	currency: currency,
+
+	periodStart: periodStart,
+
+	periodEnd: periodEnd,
+
+	sequenceNumber: nextSeq,
+
+	isRevision: isReprocess or isManual,
+
+	triggerSource: vars.triggerSource default "SCHEDULED",
+
+	correlationId: vars.correlationId default correlationId,
+
+	generatedAt: now() as String {format: "yyyy-MM-dd'T'HH:mm:ss'Z'"}
+
+}
+
+ ]]>
+</ee:set-variable>
+</ee:variables>
+</ee:transform>
+<logger level="INFO" doc:name="Log Period Calculated" message="Calculated Period: #[vars.runContext.periodStart] to #[vars.runContext.periodEnd], Run ID: #[vars.runContext.runId], Seq: #[vars.runContext.sequenceNumber], Is Revision: #[vars.runContext.isRevision]"/>
+</sub-flow>
+<!--  Subflow: Create Initial Audit Record in compliance_report_runs  -->
+<sub-flow name="create-initial-audit-run-subflow" doc:name="Create Initial Audit Run Subflow">
+<logger level="INFO" doc:name="Log Audit Insert" message="Creating RUNNING audit record in compliance_report_runs for Run ID: #[vars.runContext.runId]"/>
+<db:insert doc:name="Insert RUNNING Audit Record" config-ref="Compliance_Database_Config">
+<db:sql>
+<![CDATA[ 
+
+				INSERT INTO compliance_report_runs (
+
+					run_id, entity_code, entity_name, report_type,
+
+					period_start, period_end, sequence_number, is_revision,
+
+					record_count, total_amount, customer_count, completeness_result,
+
+					is_nil_report, trigger_source, run_status, correlation_id, started_at
+
+				) VALUES (
+
+					:runId, :entityCode, :entityName, :reportType,
+
+					:periodStart, :periodEnd, :sequenceNumber, :isRevision,
+
+					0, 0.00, 0, 'PENDING',
+
+					false, :triggerSource, 'RUNNING', :correlationId, CURRENT_TIMESTAMP
+
+				)
+
+			 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+				runId: vars.runContext.runId,
+
+				entityCode: vars.runContext.entityCode,
+
+				entityName: vars.runContext.entityName,
+
+				reportType: vars.runContext.reportType,
+
+				periodStart: vars.runContext.periodStart,
+
+				periodEnd: vars.runContext.periodEnd,
+
+				sequenceNumber: vars.runContext.sequenceNumber,
+
+				isRevision: vars.runContext.isRevision,
+
+				triggerSource: vars.runContext.triggerSource,
+
+				correlationId: vars.runContext.correlationId
+
+			}] ]]>
+</db:input-parameters>
+</db:insert>
+</sub-flow>
+<!--  Subflow: Extract Flagged Transactions with Deterministic Ordering & Streaming  -->
+<sub-flow name="extract-flagged-transactions-subflow" doc:name="Extract Flagged Transactions Subflow">
+<logger level="INFO" doc:name="Log Extraction Query" message="Executing streamed extraction query for Period [#[vars.runContext.periodStart] to #[vars.runContext.periodEnd]] with fetchSize #[p('compliance.fetchSize')]"/>
+<db:select doc:name="Streamed Extraction Select" config-ref="Compliance_Database_Config" target="extractedRecords" fetchSize="#[p('compliance.fetchSize') as Number]">
+<db:sql>
+<![CDATA[ 
+
+				SELECT 
+
+					t.transaction_id,
+
+					t.transaction_timestamp,
+
+					t.account_number,
+
+					c.customer_id,
+
+					c.customer_name,
+
+					c.customer_type,
+
+					t.transaction_type,
+
+					t.channel,
+
+					t.currency,
+
+					t.amount,
+
+					t.counterparty_name,
+
+					t.counterparty_country,
+
+					f.flag_code,
+
+					f.flag_reason,
+
+					f.flagged_at,
+
+					f.reviewer,
+
+					f.review_status
+
+				FROM transaction_flags f
+
+				JOIN transactions t ON f.transaction_id = t.transaction_id
+
+				JOIN customers c ON t.customer_id = c.customer_id
+
+				WHERE (
+                    (:isHistoricalReprocess = TRUE AND f.review_status = 'REPORTED')
+                    OR
+                    (:isHistoricalReprocess = FALSE AND f.review_status = 'PENDING_REPORT')
+                  )
+                  AND f.flagged_at >= :periodStart
+                  AND f.flagged_at < :periodEnd
+
+				ORDER BY f.flagged_at ASC, t.transaction_id ASC
+
+			 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+				periodStart: vars.runContext.periodStart,
+
+				periodEnd: vars.runContext.periodEnd,
+				isHistoricalReprocess: vars.isHistoricalReprocess default false
+
+			}] ]]>
+</db:input-parameters>
+</db:select>
+<logger level="INFO" doc:name="Log Extraction Count" message="Extracted #[sizeOf(vars.extractedRecords default [])] qualifying flagged transactions."/>
+</sub-flow>
+<!--  Subflow: Execute Independent Completeness Aggregate Query  -->
+<sub-flow name="execute-completeness-aggregate-subflow" doc:name="Execute Completeness Aggregate Subflow">
+<logger level="INFO" doc:name="Log Aggregate Query" message="Executing independent aggregate query for completeness comparison."/>
+<db:select doc:name="Aggregate Select" config-ref="Compliance_Database_Config" target="aggregateTotals">
+<db:sql>
+<![CDATA[ 
+
+				SELECT 
+
+					COUNT(f.flag_id) AS total_records,
+
+					COALESCE(SUM(t.amount), 0.00) AS total_amount,
+
+					COUNT(DISTINCT c.customer_id) AS total_customers
+
+				FROM transaction_flags f
+
+				JOIN transactions t ON f.transaction_id = t.transaction_id
+
+				JOIN customers c ON t.customer_id = c.customer_id
+
+				WHERE (
+                    (:isHistoricalReprocess = TRUE AND f.review_status = 'REPORTED')
+                    OR
+                    (:isHistoricalReprocess = FALSE AND f.review_status = 'PENDING_REPORT')
+                  )
+                  AND f.flagged_at >= :periodStart
+                  AND f.flagged_at < :periodEnd
+
+			 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+				periodStart: vars.runContext.periodStart,
+
+				periodEnd: vars.runContext.periodEnd,
+				isHistoricalReprocess: vars.isHistoricalReprocess default false
+
+			}] ]]>
+</db:input-parameters>
+</db:select>
+</sub-flow>
+<!--  Subflow: Retrieve Historical Runs for Volume Deviation Analysis  -->
+<sub-flow name="get-historical-runs-subflow" doc:name="Get Historical Runs Subflow">
+<db:select doc:name="Select Last 5 Successful Runs" config-ref="Compliance_Database_Config" target="historicalRuns">
+<db:sql>
+<![CDATA[ 
+
+				SELECT 
+
+					run_id, 
+
+					record_count, 
+
+					total_amount, 
+
+					customer_count, 
+
+					run_status 
+
+				FROM compliance_report_runs 
+
+				WHERE entity_code = :entityCode 
+
+				  AND report_type = :reportType 
+
+				  AND run_status = 'SUCCESS'
+
+				ORDER BY completed_at DESC 
+
+				LIMIT 5
+
+			 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+				entityCode: vars.runContext.entityCode,
+
+				reportType: vars.runContext.reportType
+
+			}] ]]>
+</db:input-parameters>
+</db:select>
+</sub-flow>
+<!--  Subflow: Update Audit Record Status in compliance_report_runs  -->
+<sub-flow name="update-audit-run-status-subflow" doc:name="Update Audit Run Status Subflow">
+<db:update doc:name="Update Run Audit Status" config-ref="Compliance_Database_Config">
+<db:sql>
+<![CDATA[ 
+
+				UPDATE compliance_report_runs SET
+
+					record_count = :recordCount,
+
+					total_amount = :totalAmount,
+
+					customer_count = :customerCount,
+
+					completeness_result = :completenessResult,
+
+					is_nil_report = :isNilReport,
+
+					output_file_path = :outputFilePath,
+
+					archive_file_path = :archiveFilePath,
+
+					summary_file_path = :summaryFilePath,
+
+					checksum = :checksum,
+
+					notification_status = :notificationStatus,
+
+					notification_mode = :notificationMode,
+
+					run_status = :runStatus,
+
+					error_message = :errorMessage,
+
+					completed_at = CASE WHEN :runStatus IN ('SUCCESS', 'FAILED') THEN CURRENT_TIMESTAMP ELSE completed_at END
+
+				WHERE run_id = :runId
+
+			 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+				runId: vars.runContext.runId,
+
+				recordCount: vars.runMetrics.recordCount default 0,
+
+				totalAmount: vars.runMetrics.totalAmount default 0.00,
+
+				customerCount: vars.runMetrics.customerCount default 0,
+
+				completenessResult: vars.runMetrics.completenessResult default 'PENDING',
+
+				isNilReport: (vars.runMetrics.recordCount default 0) == 0,
+
+				outputFilePath: vars.outputSubmissionFilePath,
+
+				archiveFilePath: vars.archiveSubmissionFilePath,
+
+				summaryFilePath: vars.archiveSummaryFilePath,
+
+				checksum: vars.runMetrics.checksum default 'NIL_REPORT',
+
+				notificationStatus: vars.notificationStatus default 'PENDING',
+
+				notificationMode: vars.notificationMode default 'ATTACHMENT',
+
+				runStatus: vars.currentRunStatus default 'RUNNING',
+
+				errorMessage: vars.runErrorMessage
+
+			}] ]]>
+</db:input-parameters>
+</db:update>
+</sub-flow>
+<!--  Subflow: Advance Reporting Control Timestamp & Sequence (Only on SUCCESS)  -->
+<sub-flow name="advance-reporting-control-subflow" doc:name="Advance Reporting Control Subflow">
+<choice doc:name="Check if Historical Reprocess or Live Advance">
+<when expression="#[!vars.runContext.isRevision]">
+<logger level="INFO" doc:name="Log Advancing Control" message="Advancing reporting control for #[vars.runContext.entityCode] to #[vars.runContext.periodEnd], seq: #[vars.runContext.sequenceNumber]"/>
+<db:update doc:name="Update Compliance Control Table" config-ref="Compliance_Database_Config">
+<db:sql>
+<![CDATA[ 
+
+						UPDATE compliance_report_control SET
+
+							last_success_period_end = :periodEnd,
+
+							current_sequence_number = :sequenceNumber,
+
+							updated_at = CURRENT_TIMESTAMP
+
+						WHERE entity_code = :entityCode AND report_type = :reportType
+
+					 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+						periodEnd: vars.runContext.periodEnd,
+
+						sequenceNumber: vars.runContext.sequenceNumber,
+
+						entityCode: vars.runContext.entityCode,
+
+						reportType: vars.runContext.reportType
+
+					}] ]]>
+</db:input-parameters>
+</db:update>
+</when>
+<otherwise>
+<logger level="INFO" doc:name="Log Reprocess No Control Advance" message="Historical reprocess completed. Preserving master control timeline; master pointer not advanced."/>
+</otherwise>
+</choice>
+</sub-flow>
+<!--  Subflow: Update Flag Statuses to REPORTED  -->
+<sub-flow name="mark-flags-reported-subflow" doc:name="Mark Flags Reported Subflow">
+<choice doc:name="Has Records to Update">
+<when expression="#[!isEmpty(vars.extractedRecords)]">
+<db:update doc:name="Update Flags to REPORTED" config-ref="Compliance_Database_Config">
+<db:sql>
+<![CDATA[ 
+
+						UPDATE transaction_flags SET
+
+							review_status = 'REPORTED',
+
+							report_run_id = :runId
+
+						WHERE review_status = 'PENDING_REPORT'
+
+						  AND flagged_at >= :periodStart
+
+						  AND flagged_at < :periodEnd
+
+					 ]]>
+</db:sql>
+<db:input-parameters>
+<![CDATA[ #[{
+
+						runId: vars.runContext.runId,
+
+						periodStart: vars.runContext.periodStart,
+
+						periodEnd: vars.runContext.periodEnd
+
+					}] ]]>
+</db:input-parameters>
+</db:update>
+</when>
+</choice>
+</sub-flow>
+</mule>
